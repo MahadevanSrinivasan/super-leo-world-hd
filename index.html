@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Super Leo World HD: Dino Island — 1080p 60fps Platformer</title>
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-7BM4FSL4YP"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-7BM4FSL4YP');
+  </script>
+  <style>
+    :root {
+      --bg: #080c14;
+      --panel: #121824;
+      --border: #283246;
+      --accent: #fbbf24;
+      --emerald: #10b981;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+    }
+    html, body {
+      overscroll-behavior: none;
+    }
+    body {
+      margin: 0;
+      padding: 12px 16px 18px;
+      background: radial-gradient(circle at 50% 0%, #1a2744 0%, var(--bg) 72%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 1180px;
+      margin-bottom: 10px;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      font-weight: 900;
+      letter-spacing: 0.5px;
+      background: linear-gradient(180deg, #fde047 0%, #f59e0b 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      filter: drop-shadow(0 2px 0 rgba(120, 53, 15, 0.85));
+    }
+    .badge {
+      background: rgba(16, 185, 129, 0.16);
+      border: 1px solid rgba(16, 185, 129, 0.45);
+      color: #6ee7b7;
+      font-size: 0.74rem;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 999px;
+    }
+    .toolbar {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    button.btn, a.btn, select.btn {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 11px;
+      border-radius: 7px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+    button.btn:hover, a.btn:hover, select.btn:hover {
+      background: #1e293b;
+      border-color: var(--accent);
+    }
+    button.btn.active-mode {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: #1e293b;
+    }
+    .cabinet {
+      position: relative;
+      background: #0b101b;
+      border: 3px solid #263147;
+      border-radius: 16px;
+      padding: 10px;
+      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.72);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      max-width: 100%;
+    }
+    .canvas-wrap {
+      position: relative;
+      width: min(1160px, calc(100vw - 28px), calc((100vh - 150px) * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 2px solid #000;
+      touch-action: none;
+    }
+    .cabinet:fullscreen,
+    .cabinet:-webkit-full-screen {
+      width: 100vw;
+      height: 100vh;
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: #000;
+      justify-content: center;
+      align-items: center;
+    }
+    .cabinet:fullscreen .canvas-wrap,
+    .cabinet:-webkit-full-screen .canvas-wrap {
+      width: min(100vw, calc(100vh * 16 / 9));
+      height: min(100vh, calc(100vw * 9 / 16));
+      border: none;
+      border-radius: 0;
+    }
+    canvas#game-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Direct On-Screen Gesture & Tilt Overlay */
+    #gesture-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      pointer-events: auto;
+      touch-action: none;
+      overflow: hidden;
+    }
+    #tilt-bar {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 130px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(8, 12, 20, 0.8);
+      border: 1px solid rgba(251, 191, 36, 0.6);
+      display: none;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    #tilt-bar.visible {
+      display: block;
+    }
+    #tilt-dot {
+      position: absolute;
+      top: 1px;
+      left: 50%;
+      width: 16px;
+      height: 6px;
+      margin-left: -8px;
+      border-radius: 999px;
+      background: var(--accent);
+      transition: left 0.04s linear;
+    }
+    .touch-stick-base {
+      position: absolute;
+      width: 86px;
+      height: 86px;
+      margin-left: -43px;
+      margin-top: -43px;
+      border-radius: 50%;
+      border: 2px solid rgba(251, 191, 36, 0.5);
+      background: radial-gradient(circle, rgba(251, 191, 36, 0.16) 0%, rgba(8, 12, 20, 0.25) 75%);
+      pointer-events: none;
+      display: none;
+    }
+    .touch-stick-knob {
+      position: absolute;
+      width: 38px;
+      height: 38px;
+      margin-left: -19px;
+      margin-top: -19px;
+      border-radius: 50%;
+      background: rgba(251, 191, 36, 0.82);
+      border: 2px solid #fff;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      pointer-events: none;
+      display: none;
+    }
+    .touch-action-ripple {
+      position: absolute;
+      width: 72px;
+      height: 72px;
+      margin-left: -36px;
+      margin-top: -36px;
+      border-radius: 50%;
+      border: 2px solid rgba(16, 185, 129, 0.85);
+      background: rgba(16, 185, 129, 0.28);
+      pointer-events: none;
+      display: none;
+    }
+    #gesture-hint {
+      position: absolute;
+      left: 50%;
+      bottom: 10px;
+      transform: translateX(-50%);
+      background: rgba(8, 12, 20, 0.85);
+      border: 1px solid rgba(251, 191, 36, 0.45);
+      color: #f8fafc;
+      font-size: 0.75rem;
+      padding: 4px 12px;
+      border-radius: 999px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+    @media (pointer: coarse), (max-width: 820px) {
+      #gesture-hint {
+        opacity: 0.94;
+      }
+    }
+    #gesture-hint.hidden {
+      opacity: 0 !important;
+    }
+
+    /* Optional Virtual Gamepad Deck */
+    .touch-controls {
+      display: none;
+      width: 100%;
+      max-width: 920px;
+      margin-top: 10px;
+      padding: 6px 4px 2px;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      touch-action: none;
+      z-index: 20;
+    }
+    body.show-gamepad .touch-controls {
+      display: flex;
+    }
+    .dpad-cluster {
+      position: relative;
+      width: 164px;
+      height: 144px;
+      flex-shrink: 0;
+      touch-action: none;
+    }
+    .tbtn {
+      border-radius: 14px;
+      background: linear-gradient(180deg, #273244 0%, #192130 100%);
+      border: 2px solid #475569;
+      box-shadow: 0 4px 0 #090d14, inset 0 1px 0 rgba(255, 255, 255, 0.14);
+      color: #f8fafc;
+      font-weight: 800;
+      font-size: 1rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      touch-action: none;
+      cursor: pointer;
+      padding: 0;
+      line-height: 1.05;
+    }
+    .tbtn span.sub {
+      font-size: 0.56rem;
+      font-weight: 700;
+      opacity: 0.88;
+      margin-top: 2px;
+    }
+    .tbtn.active {
+      background: var(--emerald) !important;
+      border-color: var(--accent) !important;
+      transform: translateY(2px) scale(0.96);
+    }
+    .dpad-cluster .tbtn.d-left  { position: absolute; left: 0; top: 40px; width: 62px; height: 62px; }
+    .dpad-cluster .tbtn.d-right { position: absolute; right: 0; top: 40px; width: 62px; height: 62px; }
+    .dpad-cluster .tbtn.d-up    { position: absolute; left: 51px; top: 0; width: 62px; height: 46px; font-size: 0.85rem; }
+    .dpad-cluster .tbtn.d-down  { position: absolute; left: 51px; bottom: 0; width: 62px; height: 48px; font-size: 0.85rem; }
+    .meta-pad {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .tbtn.pill {
+      width: 82px;
+      height: 34px;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      letter-spacing: 0.5px;
+    }
+    .ab-cluster {
+      position: relative;
+      width: 184px;
+      height: 144px;
+      flex-shrink: 0;
+      touch-action: none;
+    }
+    .tbtn.tongue {
+      position: absolute;
+      left: 0;
+      bottom: 8px;
+      width: 74px;
+      height: 74px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #10b981 0%, #047857 100%);
+      border-color: #6ee7b7;
+      font-size: 0.88rem;
+    }
+    .tbtn.jump {
+      position: absolute;
+      right: 0;
+      bottom: 24px;
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #ef4444 0%, #b91c1c 100%);
+      border-color: #fca5a5;
+      font-size: 0.96rem;
+    }
+    .tbtn.combo {
+      position: absolute;
+      left: 10px;
+      top: 0;
+      width: 158px;
+      height: 38px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #6366f1 0%, #4338ca 100%);
+      border-color: #a5b4fc;
+      font-size: 0.7rem;
+    }
+
+    .controls-card {
+      width: 100%;
+      max-width: 1180px;
+      margin-top: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 0.83rem;
+      color: var(--muted);
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 8px 18px;
+    }
+    .controls-card strong {
+      color: var(--text);
+    }
+    kbd {
+      background: #1e293b;
+      border: 1px solid #475569;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 0.76rem;
+      color: var(--accent);
+    }
+    .dino-legend {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      grid-column: 1 / -1;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255, 255, 255, 0.07);
+      color: #cbd5e1;
+      font-size: 0.8rem;
+    }
+    .dino-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>SUPER LEO WORLD HD: DINO ISLAND</h1>
+      <span class="badge">1080p 60FPS &bull; 4 Rideable Dinos</span>
+    </div>
+    <div class="toolbar">
+      <a class="btn" href="https://theshybulb.com/projects/">&larr; The Shy Bulb</a>
+      <select class="btn" id="stage-select" aria-label="Select Stage">
+        <option value="0">Stage 1-1: Emerald Lagoon</option>
+        <option value="1">Stage 1-2: Amber Crystal Cave</option>
+        <option value="2">Stage 2-1: Sunburst Oasis</option>
+        <option value="3">Stage 2-2: Tricera Fortress</option>
+        <option value="4">Stage 3-1: Skyward Cloud Isles</option>
+        <option value="5">Stage 3-2: Aurora Glacier Peaks</option>
+        <option value="6">Stage 4-1: Starlight Valley</option>
+        <option value="7">Stage 4-2: King Tyrannor's Citadel</option>
+      </select>
+      <button class="btn" id="tilt-btn" type="button">Tilt: OFF</button>
+      <button class="btn" id="touch-btn" type="button">Touch: SCREEN</button>
+      <button class="btn" id="music-btn" type="button">Music: ON</button>
+      <button class="btn" id="mute-btn" type="button">SFX: ON</button>
+      <button class="btn" id="fs-btn" type="button">Fullscreen</button>
+      <a class="btn" href="https://github.com/MahadevanSrinivasan/super-leo-world-hd" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </header>
+
+  <div class="cabinet" id="cabinet">
+    <div class="canvas-wrap">
+      <canvas id="game-canvas" width="1920" height="1080"></canvas>
+      <div id="gesture-layer" aria-label="Direct Touch Screen Controls">
+        <div id="tilt-bar"><div id="tilt-dot"></div></div>
+        <div class="touch-stick-base" id="stick-base"></div>
+        <div class="touch-stick-knob" id="stick-knob"></div>
+        <div class="touch-action-ripple" id="action-ripple"></div>
+        <div id="gesture-hint">Slide to Run &bull; Tap Right / Flick &uarr; to Jump &amp; Flutter &bull; Hold Right to Tongue-Grab/Spit &bull; Slide &darr; Ground-Pound</div>
+      </div>
+    </div>
+
+    <div class="touch-controls" id="touch-controls" aria-label="Touch Gamepad">
+      <div class="dpad-cluster">
+        <button class="tbtn d-up" type="button" data-action="up" aria-label="Up">&uarr;<span class="sub">UP</span></button>
+        <button class="tbtn d-left" type="button" data-action="left" aria-label="Move Left">&larr;</button>
+        <button class="tbtn d-right" type="button" data-action="right" aria-label="Move Right">&rarr;</button>
+        <button class="tbtn d-down" type="button" data-action="down" aria-label="Crouch / Ground Pound">&darr;<span class="sub">POUND</span></button>
+      </div>
+
+      <div class="meta-pad">
+        <button class="tbtn pill" type="button" data-action="start">START</button>
+        <button class="tbtn pill" type="button" data-action="bail">BAIL OUT</button>
+      </div>
+
+      <div class="ab-cluster">
+        <button class="tbtn combo" type="button" data-action="tongue,jump">TONGUE + FLUTTER JUMP</button>
+        <button class="tbtn tongue" type="button" data-action="tongue">Y / B<span class="sub">TONGUE/FIRE</span></button>
+        <button class="tbtn jump" type="button" data-action="jump">A<span class="sub">JUMP/FLUTTER</span></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls-card">
+    <div><strong>Move &amp; Wall-Slide:</strong> <kbd>&larr;</kbd> <kbd>&rarr;</kbd> or <kbd>A</kbd> <kbd>D</kbd></div>
+    <div><strong>Jump / Flutter-Hover / Wall-Jump:</strong> <kbd>Space</kbd>, <kbd>W</kbd>, or <kbd>&uarr;</kbd> (Hold in air to Flutter!)</div>
+    <div><strong>Dino Tongue-Grab &amp; Spit / Sprint:</strong> <kbd>Z</kbd>, <kbd>Shift</kbd>, or <kbd>J</kbd></div>
+    <div><strong>Ground-Pound / Secret Pipe:</strong> <kbd>&darr;</kbd> or <kbd>S</kbd> in mid-air to slam through bricks!</div>
+    <div><strong>Dino Bail-Out Save Jump:</strong> <kbd>E</kbd>, <kbd>X</kbd>, or <kbd>K</kbd> in mid-air to leap off Dino's saddle!</div>
+    <div><strong>Mobile Touch:</strong> Slide anywhere to Run, Tap/Hold Right to Jump + Tongue-Grab, Slide <kbd>&darr;</kbd> to Ground-Pound</div>
+    <div class="dino-legend">
+      <strong>Rideable Dinos (Hit Spotted Egg Blocks!):</strong>
+      <span class="dino-pill"><span class="dot" style="background:#10b981"></span><strong>Emerald Rex (Green):</strong> Long Tongue-Grab, Swallow &amp; Spit Shells, Flutter-Jump</span>
+      <span class="dino-pill"><span class="dot" style="background:#ef4444"></span><strong>Blaze Rex (Red):</strong> Spits Any Swallowed Enemy as 3x Giant HD Fireballs!</span>
+      <span class="dino-pill"><span class="dot" style="background:#3b82f6"></span><strong>Sky Rex (Blue):</strong> Feathered Wings — Multi-Flap Flight Through the Sky!</span>
+      <span class="dino-pill"><span class="dot" style="background:#fbbf24"></span><strong>Quake Rex (Yellow):</strong> Every Stomp &amp; Ground-Pound Triggers a Golden Seismic Shockwave!</span>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
