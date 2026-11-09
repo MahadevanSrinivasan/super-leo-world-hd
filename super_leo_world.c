@@ -1,7 +1,8 @@
 /*
- * Super Leo World: Dino Island (Native RetroPie / SDL 1.2 Widescreen Edition)
- * 16:9 Widescreen (480x270 -> hardware scaled to 1280x720 HDMI at 60 FPS on Raspberry Pi 1)
+ * Super Leo World HD: Dino Island (Native RetroPie / SDL2 Hardware-Accelerated 720p HD Edition)
+ * True Fullscreen 1280x720 HD (60 FPS OpenGL ES 2.0 / VideoCore IV GPU on Raspberry Pi)
  * Features:
+ *  - High-Definition 1280x720 Hardware-Accelerated Rendering with Anti-Aliased Shaded Textures
  *  - 4 Rideable Dino Companions hatched from Spotted Egg Blocks:
  *      1. Emerald Rex (Green): Chameleon Tongue-Grab, Swallow & Spit Shells, Flutter-Jump Hover
  *      2. Blaze Rex (Red): Spits any swallowed enemy/shell as a 3-Way Spread of Giant Fireballs
@@ -9,21 +10,27 @@
  *      4. Quake Rex (Yellow): Expanding Golden Seismic Shockwave on landings & Ground-Pounds
  *  - Modern Mario Moveset: Wall-Slide & Wall-Jump, Ground-Pound, Dino Bail-Out Save Jump
  *  - 8 Stages across 4 Worlds (1-1 through 4-2) with Tricera-King & King Tyrannor Bosses
- *  - Built-in SDL 1.2 Chiptune Sound Effects over HDMI
+ *  - Built-in SDL2 Chiptune Sound Effects over HDMI + Keyboard & Gamepad Support
  */
 
-#include <SDL/SDL.h>
+#include <SDL2/SDL.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* Logical World Units (16:9) */
 #define W 480
 #define H 270
 #define TILE 16
 #define MAP_W 185
 #define MAP_H 17
 #define GRAVITY 0.17f
+
+/* Native HD Output Resolution (720p 16:9) */
+#define HD_W 1280
+#define HD_H 720
+#define HD_SCALE ((float)HD_W / (float)W)
 
 #define MAX_ENTITIES 96
 #define MAX_FIREBALLS 16
@@ -100,6 +107,19 @@ static const StageDef STAGES[8] = {
 };
 
 typedef struct {
+    Uint8 r, g, b, a;
+} Color;
+
+static Color rgba(int r, int g, int b, int a) {
+    Color c = {(Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a};
+    return c;
+}
+
+static Color rgb(int r, int g, int b) {
+    return rgba(r, g, b, 255);
+}
+
+typedef struct {
     int active;
     int type;
     int dino_type;
@@ -123,17 +143,38 @@ typedef struct {
 typedef struct {
     int active;
     float x, y, vx, vy;
-    Uint32 color;
+    Color color;
     int life, max_life;
 } Particle;
 
 typedef struct {
     int active;
     float x, y, r, max_r;
-    Uint32 color;
+    Color color;
 } Shockwave;
 
-static SDL_Surface *screen = NULL;
+static SDL_Window *window = NULL;
+static SDL_Renderer *renderer = NULL;
+
+/* Pre-baked HD Procedural Textures */
+static SDL_Texture *tex_circle = NULL;
+static SDL_Texture *tex_glow = NULL;
+static SDL_Texture *tex_ring = NULL;
+static SDL_Texture *tex_brick = NULL;
+static SDL_Texture *tex_qblock = NULL;
+static SDL_Texture *tex_used = NULL;
+static SDL_Texture *tex_egg[5] = {NULL};
+static SDL_Texture *tex_pipe = NULL;
+static SDL_Texture *tex_coin = NULL;
+static SDL_Texture *tex_berry = NULL;
+static SDL_Texture *tex_dino[5][2] = {{NULL}};
+static SDL_Texture *tex_leo[3][2] = {{NULL}};
+static SDL_Texture *tex_walker = NULL;
+static SDL_Texture *tex_koopa = NULL;
+static SDL_Texture *tex_shell = NULL;
+static SDL_Texture *tex_flyer = NULL;
+static SDL_Texture *tex_boss = NULL;
+
 static char map[MAP_H][MAP_W];
 static int bump_off[MAP_H][MAP_W];
 
@@ -267,29 +308,416 @@ static void audio_cb(void *userdata, Uint8 *stream, int len) {
     }
 }
 
-/* Drawing helpers */
-static Uint32 rgb(int r, int g, int b) {
-    return SDL_MapRGB(screen->format, (Uint8)r, (Uint8)g, (Uint8)b);
-}
-
-static void fill_rect(int x, int y, int w, int h, Uint32 col) {
-    if (x >= W || y >= H || x + w <= 0 || y + h <= 0) return;
-    int x1 = x < 0 ? 0 : x;
-    int y1 = y < 0 ? 0 : y;
-    int x2 = (x + w > W) ? W : (x + w);
-    int y2 = (y + h > H) ? H : (y + h);
-    SDL_Rect r = {(Sint16)x1, (Sint16)y1, (Uint16)(x2 - x1), (Uint16)(y2 - y1)};
-    SDL_FillRect(screen, &r, col);
-}
-
-static void fill_circle(int cx, int cy, int rad, Uint32 col) {
-    for (int dy = -rad; dy <= rad; dy++) {
-        int dx = (int)sqrtf((float)(rad * rad - dy * dy));
-        fill_rect(cx - dx, cy + dy, dx * 2 + 1, 1, col);
+static void get_dino_rgb(int d, int *r, int *g, int *b) {
+    switch (d) {
+        case DINO_RED:    *r = 239; *g = 68;  *b = 68;  break;
+        case DINO_BLUE:   *r = 59;  *g = 130; *b = 246; break;
+        case DINO_YELLOW: *r = 245; *g = 158; *b = 11;  break;
+        default:          *r = 16;  *g = 185; *b = 129; break;
     }
 }
 
-/* 5x7 Pixel Font */
+static const char *dino_name(int d) {
+    switch (d) {
+        case DINO_GREEN:  return "EMERALD REX";
+        case DINO_RED:    return "BLAZE REX";
+        case DINO_BLUE:   return "SKY REX";
+        case DINO_YELLOW: return "QUAKE REX";
+        default:          return "NONE";
+    }
+}
+
+/* ============================================================================
+ * Procedural Anti-Aliased HD Texture Baker (runs once at startup)
+ * ============================================================================ */
+static float clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static void blend_px(Uint32 *px, int w, int h, int x, int y, int r, int g, int b, float a) {
+    if (x < 0 || x >= w || y < 0 || y >= h || a <= 0.0f) return;
+    a = clampf(a, 0.0f, 1.0f);
+    Uint32 dst = px[y * w + x];
+    int dr = (dst >> 24) & 0xFF;
+    int dg = (dst >> 16) & 0xFF;
+    int db = (dst >> 8)  & 0xFF;
+    int da = dst & 0xFF;
+    float fa = da / 255.0f;
+    float out_a = a + fa * (1.0f - a);
+    if (out_a <= 0.001f) return;
+    int nr = (int)((r * a + dr * fa * (1.0f - a)) / out_a);
+    int ng = (int)((g * a + dg * fa * (1.0f - a)) / out_a);
+    int nb = (int)((b * a + db * fa * (1.0f - a)) / out_a);
+    int na = (int)(out_a * 255.0f);
+    px[y * w + x] = ((Uint32)(nr & 0xFF) << 24) | ((Uint32)(ng & 0xFF) << 16) |
+                    ((Uint32)(nb & 0xFF) << 8)  | (Uint32)(na & 0xFF);
+}
+
+static void sdf_ellipse(Uint32 *px, int w, int h, float cx, float cy, float rx, float ry,
+                        int r, int g, int b, int outline_px, int shade_3d) {
+    int x0 = (int)(cx - rx - outline_px - 2);
+    int x1 = (int)(cx + rx + outline_px + 2);
+    int y0 = (int)(cy - ry - outline_px - 2);
+    int y1 = (int)(cy + ry + outline_px + 2);
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            float dx = (x + 0.5f - cx) / rx;
+            float dy = (y + 0.5f - cy) / ry;
+            float dist = sqrtf(dx * dx + dy * dy);
+            float avg_r = 0.5f * (rx + ry);
+            float px_dist = (dist - 1.0f) * avg_r;
+            if (outline_px > 0) {
+                float oa = clampf(1.0f - (px_dist - outline_px), 0.0f, 1.0f);
+                if (oa > 0.0f) blend_px(px, w, h, x, y, 15, 23, 42, oa);
+            }
+            float ia = clampf(0.5f - px_dist, 0.0f, 1.0f);
+            if (ia > 0.0f) {
+                int cr = r, cg = g, cb = b;
+                if (shade_3d) {
+                    float light = clampf(1.18f - 0.38f * (dx * 0.45f + dy * 0.85f), 0.68f, 1.32f);
+                    cr = (int)clampf(r * light, 0, 255);
+                    cg = (int)clampf(g * light, 0, 255);
+                    cb = (int)clampf(b * light, 0, 255);
+                }
+                blend_px(px, w, h, x, y, cr, cg, cb, ia);
+            }
+        }
+    }
+}
+
+static void sdf_round_rect(Uint32 *px, int w, int h, float x0, float y0, float rw, float rh, float rad,
+                           int r, int g, int b, int outline_px, int shade_3d) {
+    float cx = x0 + rw * 0.5f;
+    float cy = y0 + rh * 0.5f;
+    float hx = rw * 0.5f - rad;
+    float hy = rh * 0.5f - rad;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            float dx = fabsf(x + 0.5f - cx) - hx;
+            float dy = fabsf(y + 0.5f - cy) - hy;
+            float ox = dx > 0.0f ? dx : 0.0f;
+            float oy = dy > 0.0f ? dy : 0.0f;
+            float dist = sqrtf(ox * ox + oy * oy) + (dx > dy ? (dx < 0 ? dx : 0) : (dy < 0 ? dy : 0)) - rad;
+            if (outline_px > 0) {
+                float oa = clampf(0.5f - (dist - outline_px), 0.0f, 1.0f);
+                if (oa > 0.0f) blend_px(px, w, h, x, y, 15, 23, 42, oa);
+            }
+            float ia = clampf(0.5f - dist, 0.0f, 1.0f);
+            if (ia > 0.0f) {
+                int cr = r, cg = g, cb = b;
+                if (shade_3d) {
+                    float ny = (y - y0) / rh;
+                    float light = 1.16f - 0.32f * ny;
+                    cr = (int)clampf(r * light, 0, 255);
+                    cg = (int)clampf(g * light, 0, 255);
+                    cb = (int)clampf(b * light, 0, 255);
+                }
+                blend_px(px, w, h, x, y, cr, cg, cb, ia);
+            }
+        }
+    }
+}
+
+static SDL_Texture *make_tex(Uint32 *px, int w, int h) {
+    SDL_Surface *s = SDL_CreateRGBSurfaceFrom(px, w, h, 32, w * 4,
+                                              0xFF000000, 0x00FF0000, 0x0000FF00, 0x000000FF);
+    SDL_Texture *t = SDL_CreateTextureFromSurface(renderer, s);
+    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    SDL_FreeSurface(s);
+    free(px);
+    return t;
+}
+
+static void bake_hd_textures(void) {
+    /* 1. Anti-aliased Circle, Glow, and Ring (96x96) */
+    {
+        int S = 96;
+        Uint32 *p_circ = (Uint32 *)calloc(S * S, 4);
+        Uint32 *p_glow = (Uint32 *)calloc(S * S, 4);
+        Uint32 *p_ring = (Uint32 *)calloc(S * S, 4);
+        float c = S * 0.5f, R = S * 0.46f;
+        for (int y = 0; y < S; y++) {
+            for (int x = 0; x < S; x++) {
+                float d = hypotf(x + 0.5f - c, y + 0.5f - c);
+                float a_circ = clampf(R - d + 0.5f, 0.0f, 1.0f);
+                blend_px(p_circ, S, S, x, y, 255, 255, 255, a_circ);
+                float nd = clampf(1.0f - d / R, 0.0f, 1.0f);
+                blend_px(p_glow, S, S, x, y, 255, 255, 255, nd * nd);
+                float a_ring = clampf(1.0f - fabsf(d - (R - 5.0f)) / 3.5f, 0.0f, 1.0f);
+                blend_px(p_ring, S, S, x, y, 255, 255, 255, a_ring);
+            }
+        }
+        tex_circle = make_tex(p_circ, S, S);
+        tex_glow   = make_tex(p_glow, S, S);
+        tex_ring   = make_tex(p_ring, S, S);
+    }
+
+    /* 2. HD Brick Tile (64x64) */
+    {
+        int S = 64;
+        Uint32 *px = (Uint32 *)calloc(S * S, 4);
+        sdf_round_rect(px, S, S, 2, 2, 60, 60, 6, 180, 83, 9, 2, 1);
+        /* Brick sub-blocks */
+        sdf_round_rect(px, S, S, 5, 5, 25, 24, 3, 217, 119, 6, 0, 1);
+        sdf_round_rect(px, S, S, 34, 5, 25, 24, 3, 217, 119, 6, 0, 1);
+        sdf_round_rect(px, S, S, 5, 34, 14, 24, 3, 194, 65, 12, 0, 1);
+        sdf_round_rect(px, S, S, 23, 34, 22, 24, 3, 217, 119, 6, 0, 1);
+        sdf_round_rect(px, S, S, 49, 34, 10, 24, 3, 194, 65, 12, 0, 1);
+        tex_brick = make_tex(px, S, S);
+    }
+
+    /* 3. HD Question Block (64x64) */
+    {
+        int S = 64;
+        Uint32 *px = (Uint32 *)calloc(S * S, 4);
+        sdf_round_rect(px, S, S, 2, 2, 60, 60, 8, 245, 158, 11, 2, 1);
+        sdf_round_rect(px, S, S, 6, 6, 52, 52, 6, 250, 204, 21, 0, 1);
+        /* Corner rivets */
+        sdf_ellipse(px, S, S, 11, 11, 2.5f, 2.5f, 146, 64, 14, 0, 0);
+        sdf_ellipse(px, S, S, 53, 11, 2.5f, 2.5f, 146, 64, 14, 0, 0);
+        sdf_ellipse(px, S, S, 11, 53, 2.5f, 2.5f, 146, 64, 14, 0, 0);
+        sdf_ellipse(px, S, S, 53, 53, 2.5f, 2.5f, 146, 64, 14, 0, 0);
+        /* Glossy '?' emblem */
+        sdf_round_rect(px, S, S, 22, 14, 20, 8, 4, 255, 255, 255, 2, 0);
+        sdf_round_rect(px, S, S, 34, 18, 8, 14, 4, 255, 255, 255, 2, 0);
+        sdf_round_rect(px, S, S, 27, 26, 14, 12, 4, 255, 255, 255, 2, 0);
+        sdf_ellipse(px, S, S, 31, 47, 4.5f, 4.5f, 255, 255, 255, 2, 0);
+        tex_qblock = make_tex(px, S, S);
+    }
+
+    /* 4. HD Used Steel Block (64x64) */
+    {
+        int S = 64;
+        Uint32 *px = (Uint32 *)calloc(S * S, 4);
+        sdf_round_rect(px, S, S, 2, 2, 60, 60, 7, 71, 85, 105, 2, 1);
+        sdf_round_rect(px, S, S, 7, 7, 50, 50, 5, 100, 116, 139, 0, 1);
+        sdf_ellipse(px, S, S, 12, 12, 2.5f, 2.5f, 30, 41, 59, 0, 0);
+        sdf_ellipse(px, S, S, 52, 12, 2.5f, 2.5f, 30, 41, 59, 0, 0);
+        sdf_ellipse(px, S, S, 12, 52, 2.5f, 2.5f, 30, 41, 59, 0, 0);
+        sdf_ellipse(px, S, S, 52, 52, 2.5f, 2.5f, 30, 41, 59, 0, 0);
+        tex_used = make_tex(px, S, S);
+    }
+
+    /* 5. HD Spotted Dino Egg Blocks (64x64 x 4 species) */
+    for (int d = 1; d <= 4; d++) {
+        int S = 64, r, g, b;
+        get_dino_rgb(d, &r, &g, &b);
+        Uint32 *px = (Uint32 *)calloc(S * S, 4);
+        sdf_round_rect(px, S, S, 2, 2, 60, 60, 8, 226, 232, 240, 2, 1);
+        /* 3D Egg inside block */
+        sdf_ellipse(px, S, S, 32, 34, 19, 23, 255, 255, 255, 2, 1);
+        sdf_ellipse(px, S, S, 25, 26, 5.5f, 6.5f, r, g, b, 0, 1);
+        sdf_ellipse(px, S, S, 39, 32, 6.0f, 5.0f, r, g, b, 0, 1);
+        sdf_ellipse(px, S, S, 28, 43, 5.0f, 4.5f, r, g, b, 0, 1);
+        sdf_ellipse(px, S, S, 24, 21, 3.5f, 4.5f, 255, 255, 255, 0, 0);
+        tex_egg[d] = make_tex(px, S, S);
+    }
+
+    /* 6. HD Cylindrical Warp Pipe Tile (64x64) */
+    {
+        int S = 64;
+        Uint32 *px = (Uint32 *)calloc(S * S, 4);
+        for (int y = 0; y < S; y++) {
+            for (int x = 2; x < S - 2; x++) {
+                float nx = (float)(x - 2) / (float)(S - 4);
+                float spec = expf(-((nx - 0.28f) * (nx - 0.28f)) * 28.0f);
+                float shade = 0.55f + 0.45f * sinf(nx * 3.14159f) + 0.45f * spec;
+                int r = (int)clampf(16 * shade + 80 * spec, 0, 255);
+                int g = (int)clampf(185 * shade + 70 * spec, 0, 255);
+                int b = (int)clampf(129 * shade + 70 * spec, 0, 255);
+                if (x <= 4 || x >= S - 5) { r = 6; g = 78; b = 59; }
+                blend_px(px, S, S, x, y, r, g, b, 1.0f);
+            }
+        }
+        tex_pipe = make_tex(px, S, S);
+    }
+
+    /* 7. HD Coin & Tropical Berry Bush (64x64) */
+    {
+        int S = 64;
+        Uint32 *pc = (Uint32 *)calloc(S * S, 4);
+        sdf_ellipse(pc, S, S, 32, 32, 18, 22, 250, 204, 21, 2, 1);
+        sdf_ellipse(pc, S, S, 32, 32, 12, 16, 234, 179, 8, 1, 1);
+        sdf_round_rect(pc, S, S, 29, 21, 6, 22, 3, 254, 249, 195, 0, 0);
+        tex_coin = make_tex(pc, S, S);
+
+        Uint32 *pb = (Uint32 *)calloc(S * S, 4);
+        sdf_ellipse(pb, S, S, 22, 38, 15, 14, 21, 128, 61, 2, 1);
+        sdf_ellipse(pb, S, S, 42, 38, 15, 14, 21, 128, 61, 2, 1);
+        sdf_ellipse(pb, S, S, 32, 28, 17, 16, 34, 197, 94, 2, 1);
+        /* Glossy crimson berries */
+        sdf_ellipse(pb, S, S, 24, 28, 6.5f, 6.5f, 244, 63, 94, 1, 1);
+        sdf_ellipse(pb, S, S, 22, 26, 2.0f, 2.0f, 255, 255, 255, 0, 0);
+        sdf_ellipse(pb, S, S, 39, 33, 6.5f, 6.5f, 244, 63, 94, 1, 1);
+        sdf_ellipse(pb, S, S, 37, 31, 2.0f, 2.0f, 255, 255, 255, 0, 0);
+        tex_berry = make_tex(pb, S, S);
+    }
+
+    /* 8. High-Res Rideable Dino Companions (96x96 x 4 species x 2 walk frames) */
+    for (int d = 1; d <= 4; d++) {
+        int r, g, b;
+        get_dino_rgb(d, &r, &g, &b);
+        for (int f = 0; f < 2; f++) {
+            int S = 96;
+            Uint32 *px = (Uint32 *)calloc(S * S, 4);
+            int leg_off = (f == 0) ? -5 : 5;
+            /* Dorsal spines */
+            sdf_ellipse(px, S, S, 34, 26, 5, 5, 251, 191, 36, 2, 1);
+            sdf_ellipse(px, S, S, 30, 38, 5, 5, 251, 191, 36, 2, 1);
+            sdf_ellipse(px, S, S, 26, 50, 4, 4, 251, 191, 36, 2, 1);
+            /* Feathered wings for Sky Rex */
+            if (d == DINO_BLUE) {
+                sdf_ellipse(px, S, S, 26, 44 + (f ? -4 : 2), 16, 10, 248, 250, 252, 2, 1);
+                sdf_ellipse(px, S, S, 22, 38 + (f ? -4 : 2), 12, 7, 224, 242, 254, 1, 1);
+            }
+            /* Tail */
+            sdf_ellipse(px, S, S, 21, 64, 14, 7, r, g, b, 2, 1);
+            /* Back leg */
+            sdf_round_rect(px, S, S, 33 - leg_off, 68, 12, 19, 5, (int)(r * 0.8f), (int)(g * 0.8f), (int)(b * 0.8f), 2, 1);
+            sdf_round_rect(px, S, S, 33 - leg_off, 81, 16, 8, 4, 245, 158, 11, 2, 1);
+            /* Torso & Cream Belly */
+            sdf_ellipse(px, S, S, 42, 62, 19, 16, r, g, b, 2, 1);
+            sdf_ellipse(px, S, S, 48, 64, 13, 12, 254, 249, 195, 0, 1);
+            /* Red Saddle */
+            sdf_ellipse(px, S, S, 38, 51, 11, 6, 220, 38, 38, 2, 1);
+            /* Front leg */
+            sdf_round_rect(px, S, S, 45 + leg_off, 69, 12, 19, 5, r, g, b, 2, 1);
+            sdf_round_rect(px, S, S, 45 + leg_off, 82, 16, 8, 4, 251, 191, 36, 2, 1);
+            /* Neck, Head & Big Round Snout */
+            sdf_ellipse(px, S, S, 52, 42, 13, 15, r, g, b, 2, 1);
+            sdf_ellipse(px, S, S, 68, 40, 16, 13, r, g, b, 2, 1);
+            /* Expressive Eye + Pupil + Catchlight */
+            sdf_ellipse(px, S, S, 55, 29, 7, 8, 255, 255, 255, 2, 0);
+            sdf_ellipse(px, S, S, 57, 29, 3.5f, 4.5f, 15, 23, 42, 0, 0);
+            sdf_ellipse(px, S, S, 56, 27, 1.8f, 1.8f, 255, 255, 255, 0, 0);
+            /* Nostril & Smile */
+            sdf_ellipse(px, S, S, 75, 35, 2.2f, 2.2f, 15, 23, 42, 0, 0);
+            tex_dino[d][f] = make_tex(px, S, S);
+        }
+    }
+
+    /* 9. High-Res Hero Leo Sprites (64x64 x 3 power states x 2 walk frames) */
+    for (int p = 0; p < 3; p++) {
+        int tr = (p == 2) ? 248 : 239;
+        int tg = (p == 2) ? 250 : 68;
+        int tb = (p == 2) ? 252 : 68;
+        int or_c = (p == 2) ? 220 : 37;
+        int og_c = (p == 2) ? 38  : 99;
+        int ob_c = (p == 2) ? 38  : 235;
+        for (int f = 0; f < 2; f++) {
+            int S = 64;
+            Uint32 *px = (Uint32 *)calloc(S * S, 4);
+            int step = (f == 0) ? -4 : 4;
+            /* Boots */
+            sdf_round_rect(px, S, S, 18 - step, 48, 12, 10, 4, 120, 53, 15, 2, 1);
+            sdf_round_rect(px, S, S, 32 + step, 48, 12, 10, 4, 146, 64, 14, 2, 1);
+            /* Tunic & Overalls */
+            sdf_round_rect(px, S, S, 18, 29, 28, 22, 8, tr, tg, tb, 2, 1);
+            sdf_round_rect(px, S, S, 21, 34, 22, 17, 6, or_c, og_c, ob_c, 1, 1);
+            sdf_ellipse(px, S, S, 26, 39, 2.5f, 2.5f, 250, 204, 21, 0, 0);
+            sdf_ellipse(px, S, S, 38, 39, 2.5f, 2.5f, 250, 204, 21, 0, 0);
+            /* Head & Face */
+            sdf_ellipse(px, S, S, 32, 21, 13, 12, 254, 215, 170, 2, 1);
+            sdf_ellipse(px, S, S, 42, 22, 4.5f, 3.8f, 253, 186, 116, 1, 1); /* Nose */
+            sdf_ellipse(px, S, S, 37, 19, 2.5f, 3.8f, 15, 23, 42, 0, 0);   /* Eye */
+            sdf_ellipse(px, S, S, 36, 17, 1.2f, 1.2f, 255, 255, 255, 0, 0);
+            /* Cap + Visor */
+            sdf_ellipse(px, S, S, 31, 12, 14, 7, tr, tg, tb, 2, 1);
+            sdf_round_rect(px, S, S, 28, 11, 21, 5, 2.5f, tr, tg, tb, 2, 1);
+            sdf_ellipse(px, S, S, 35, 11, 3.5f, 3.5f, 250, 204, 21, 0, 0);
+            tex_leo[p][f] = make_tex(px, S, S);
+        }
+    }
+
+    /* 10. High-Res Enemies & Bosses */
+    {
+        int S = 64;
+        /* Walker */
+        Uint32 *pw = (Uint32 *)calloc(S * S, 4);
+        sdf_round_rect(pw, S, S, 14, 46, 14, 12, 5, 15, 23, 42, 1, 1);
+        sdf_round_rect(pw, S, S, 36, 46, 14, 12, 5, 15, 23, 42, 1, 1);
+        sdf_ellipse(pw, S, S, 32, 30, 22, 20, 147, 51, 234, 2, 1);
+        sdf_ellipse(pw, S, S, 24, 26, 4.5f, 6.0f, 255, 255, 255, 1, 0);
+        sdf_ellipse(pw, S, S, 40, 26, 4.5f, 6.0f, 255, 255, 255, 1, 0);
+        sdf_ellipse(pw, S, S, 24, 27, 2.2f, 3.0f, 15, 23, 42, 0, 0);
+        sdf_ellipse(pw, S, S, 40, 27, 2.2f, 3.0f, 15, 23, 42, 0, 0);
+        tex_walker = make_tex(pw, S, S);
+
+        /* Koopa */
+        Uint32 *pk = (Uint32 *)calloc(S * S, 4);
+        sdf_round_rect(pk, S, S, 16, 46, 12, 12, 4, 245, 158, 11, 2, 1);
+        sdf_round_rect(pk, S, S, 36, 46, 12, 12, 4, 245, 158, 11, 2, 1);
+        sdf_ellipse(pk, S, S, 30, 34, 18, 16, 22, 163, 74, 2, 1);
+        sdf_ellipse(pk, S, S, 44, 22, 11, 11, 250, 204, 21, 2, 1);
+        sdf_ellipse(pk, S, S, 47, 20, 3.0f, 4.0f, 15, 23, 42, 0, 0);
+        tex_koopa = make_tex(pk, S, S);
+
+        /* Shell */
+        Uint32 *ps = (Uint32 *)calloc(S * S, 4);
+        sdf_ellipse(ps, S, S, 32, 36, 22, 18, 22, 163, 74, 2, 1);
+        sdf_ellipse(ps, S, S, 32, 32, 14, 10, 74, 222, 128, 1, 1);
+        tex_shell = make_tex(ps, S, S);
+
+        /* Winged Flyer */
+        Uint32 *pf = (Uint32 *)calloc(S * S, 4);
+        sdf_ellipse(pf, S, S, 24, 20, 14, 9, 255, 255, 255, 2, 1);
+        sdf_ellipse(pf, S, S, 34, 34, 19, 15, 236, 72, 153, 2, 1);
+        sdf_ellipse(pf, S, S, 44, 30, 4.5f, 5.5f, 255, 255, 255, 1, 0);
+        sdf_ellipse(pf, S, S, 45, 30, 2.2f, 2.8f, 15, 23, 42, 0, 0);
+        tex_flyer = make_tex(pf, S, S);
+
+        /* Boss (96x96) */
+        int BS = 96;
+        Uint32 *pb = (Uint32 *)calloc(BS * BS, 4);
+        sdf_ellipse(pb, BS, BS, 48, 56, 36, 32, 185, 28, 28, 3, 1);
+        sdf_ellipse(pb, BS, BS, 40, 60, 24, 22, 253, 224, 71, 1, 1);
+        /* Golden Crown & Horns */
+        sdf_round_rect(pb, BS, BS, 28, 14, 40, 14, 4, 250, 204, 21, 2, 1);
+        sdf_ellipse(pb, BS, BS, 20, 38, 12, 6, 254, 249, 195, 2, 1);
+        sdf_ellipse(pb, BS, BS, 34, 42, 7, 8, 254, 240, 138, 2, 0);
+        sdf_ellipse(pb, BS, BS, 33, 42, 3.5f, 4.5f, 220, 38, 38, 0, 0);
+        tex_boss = make_tex(pb, BS, BS);
+    }
+}
+
+/* ============================================================================
+ * HD Drawing Helpers (maps 480x270 logical coords to 1280x720 HD pixels)
+ * ============================================================================ */
+static void fill_rect_hd(float x, float y, float w, float h, Color c) {
+    SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
+    SDL_Rect r = {
+        (int)(x * HD_SCALE + 0.5f),
+        (int)(y * HD_SCALE + 0.5f),
+        (int)(w * HD_SCALE + 0.5f),
+        (int)(h * HD_SCALE + 0.5f)
+    };
+    if (r.w < 1) r.w = 1;
+    if (r.h < 1) r.h = 1;
+    SDL_RenderFillRect(renderer, &r);
+}
+
+static void draw_tex_world(SDL_Texture *tex, float x, float y, float w, float h, int flip_h, Color tint) {
+    if (!tex) return;
+    SDL_SetTextureColorMod(tex, tint.r, tint.g, tint.b);
+    SDL_SetTextureAlphaMod(tex, tint.a);
+    SDL_Rect dst = {
+        (int)(x * HD_SCALE + 0.5f),
+        (int)(y * HD_SCALE + 0.5f),
+        (int)(w * HD_SCALE + 0.5f),
+        (int)(h * HD_SCALE + 0.5f)
+    };
+    SDL_RenderCopyEx(renderer, tex, NULL, &dst, 0.0, NULL, flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+}
+
+static void fill_circle_hd(float cx, float cy, float rad, Color c) {
+    draw_tex_world(tex_circle, cx - rad, cy - rad, rad * 2.0f, rad * 2.0f, 0, c);
+}
+
+static void draw_glow_hd(float cx, float cy, float rad, Color c) {
+    draw_tex_world(tex_glow, cx - rad, cy - rad, rad * 2.0f, rad * 2.0f, 0, c);
+}
+
+/* 5x7 Pixel Font rendered crisp in HD with drop shadow */
 static const unsigned char font5x7[96][7] = {
     [' ' - 32] = {0,0,0,0,0,0,0},
     ['!' - 32] = {4,4,4,4,4,0,4},
@@ -308,6 +736,9 @@ static const unsigned char font5x7[96][7] = {
     ['8' - 32] = {14,17,17,14,17,17,14},
     ['9' - 32] = {14,17,17,15,1,2,12},
     [':' - 32] = {0,4,4,0,4,4,0},
+    ['<' - 32] = {2,4,8,16,8,4,2},
+    ['=' - 32] = {0,0,31,0,31,0,0},
+    ['>' - 32] = {8,4,2,1,2,4,8},
     ['?' - 32] = {14,17,1,2,4,0,4},
     ['A' - 32] = {14,17,17,31,17,17,17},
     ['B' - 32] = {30,17,17,30,17,17,30},
@@ -337,8 +768,9 @@ static const unsigned char font5x7[96][7] = {
     ['Z' - 32] = {31,1,2,4,8,16,31}
 };
 
-static void draw_text(int x, int y, const char *s, Uint32 col, int scale) {
-    int cx = x;
+static void draw_text_pass(float x, float y, const char *s, Color col, float scale) {
+    SDL_SetRenderDrawColor(renderer, col.r, col.g, col.b, col.a);
+    float cx = x;
     while (*s) {
         char c = *s++;
         if (c >= 'a' && c <= 'z') c -= 32;
@@ -347,13 +779,24 @@ static void draw_text(int x, int y, const char *s, Uint32 col, int scale) {
             for (int r = 0; r < 7; r++) {
                 for (int col_i = 0; col_i < 5; col_i++) {
                     if (g[r] & (1 << (4 - col_i))) {
-                        fill_rect(cx + col_i * scale, y + r * scale, scale, scale, col);
+                        SDL_Rect rc = {
+                            (int)((cx + col_i * scale) * HD_SCALE + 0.5f),
+                            (int)((y + r * scale) * HD_SCALE + 0.5f),
+                            (int)(scale * HD_SCALE + 0.8f),
+                            (int)(scale * HD_SCALE + 0.8f)
+                        };
+                        SDL_RenderFillRect(renderer, &rc);
                     }
                 }
             }
         }
-        cx += 6 * scale;
+        cx += 6.0f * scale;
     }
+}
+
+static void draw_text(float x, float y, const char *s, Color col, float scale) {
+    draw_text_pass(x + 0.45f * scale, y + 0.45f * scale, s, rgba(2, 6, 23, 220), scale);
+    draw_text_pass(x, y, s, col, scale);
 }
 
 static void show_banner(const char *msg, int dur) {
@@ -361,26 +804,7 @@ static void show_banner(const char *msg, int dur) {
     banner_timer = dur;
 }
 
-static const char *dino_name(int d) {
-    switch (d) {
-        case DINO_GREEN:  return "EMERALD REX";
-        case DINO_RED:    return "BLAZE REX";
-        case DINO_BLUE:   return "SKY REX";
-        case DINO_YELLOW: return "QUAKE REX";
-        default:          return "NONE";
-    }
-}
-
-static void get_dino_rgb(int d, int *r, int *g, int *b) {
-    switch (d) {
-        case DINO_RED:    *r = 239; *g = 68;  *b = 68;  break;
-        case DINO_BLUE:   *r = 59;  *g = 130; *b = 246; break;
-        case DINO_YELLOW: *r = 245; *g = 158; *b = 11;  break;
-        default:          *r = 16;  *g = 185; *b = 129; break;
-    }
-}
-
-static void spawn_particle(float x, float y, float vx, float vy, Uint32 col, int life) {
+static void spawn_particle(float x, float y, float vx, float vy, Color col, int life) {
     for (int i = 0; i < MAX_PARTICLES; i++) {
         if (!particles[i].active) {
             particles[i].active = 1;
@@ -461,7 +885,7 @@ static void spawn_shockwave(float x, float y) {
             shockwaves[i].active = 1;
             shockwaves[i].x = x;
             shockwaves[i].y = y;
-            shockwaves[i].r = 4.0f;
+            shockwaves[i].r = 6.0f;
             shockwaves[i].max_r = 76.0f;
             shockwaves[i].color = rgb(251, 191, 36);
             break;
@@ -704,8 +1128,9 @@ static void hurt_player(void) {
     load_stage(current_stage, 1);
 }
 
-static Uint8 keys_held[SDLK_LAST];
-static Uint8 prev_held[SDLK_LAST];
+/* Input State (Scancodes + Gamepad) */
+static Uint8 keys_held[SDL_NUM_SCANCODES];
+static Uint8 prev_held[SDL_NUM_SCANCODES];
 
 static void update_game(void) {
     global_tick++;
@@ -715,28 +1140,29 @@ static void update_game(void) {
         for (int x = 0; x < MAP_W; x++)
             if (bump_off[y][x] > 0) bump_off[y][x]--;
 
-    int k_left   = keys_held[SDLK_LEFT]  || keys_held[SDLK_a];
-    int k_right  = keys_held[SDLK_RIGHT] || keys_held[SDLK_d];
-    int k_down   = keys_held[SDLK_DOWN]  || keys_held[SDLK_s];
-    int k_jump   = keys_held[SDLK_SPACE] || keys_held[SDLK_UP] || keys_held[SDLK_w];
-    int p_jump   = prev_held[SDLK_SPACE] || prev_held[SDLK_UP] || prev_held[SDLK_w];
-    int k_tongue = keys_held[SDLK_z] || keys_held[SDLK_LSHIFT] || keys_held[SDLK_RSHIFT] || keys_held[SDLK_j];
-    int p_tongue = prev_held[SDLK_z] || prev_held[SDLK_LSHIFT] || prev_held[SDLK_RSHIFT] || prev_held[SDLK_j];
-    int k_bail   = keys_held[SDLK_x] || keys_held[SDLK_e] || keys_held[SDLK_LCTRL];
-    int p_bail   = prev_held[SDLK_x] || prev_held[SDLK_e] || prev_held[SDLK_LCTRL];
+    int k_left   = keys_held[SDL_SCANCODE_LEFT]  || keys_held[SDL_SCANCODE_A];
+    int k_right  = keys_held[SDL_SCANCODE_RIGHT] || keys_held[SDL_SCANCODE_D];
+    int k_down   = keys_held[SDL_SCANCODE_DOWN]  || keys_held[SDL_SCANCODE_S];
+    int p_down   = prev_held[SDL_SCANCODE_DOWN]  || prev_held[SDL_SCANCODE_S];
+    int k_jump   = keys_held[SDL_SCANCODE_SPACE] || keys_held[SDL_SCANCODE_UP] || keys_held[SDL_SCANCODE_W];
+    int p_jump   = prev_held[SDL_SCANCODE_SPACE] || prev_held[SDL_SCANCODE_UP] || prev_held[SDL_SCANCODE_W];
+    int k_tongue = keys_held[SDL_SCANCODE_Z] || keys_held[SDL_SCANCODE_LSHIFT] || keys_held[SDL_SCANCODE_RSHIFT] || keys_held[SDL_SCANCODE_J];
+    int p_tongue = prev_held[SDL_SCANCODE_Z] || prev_held[SDL_SCANCODE_LSHIFT] || prev_held[SDL_SCANCODE_RSHIFT] || prev_held[SDL_SCANCODE_J];
+    int k_bail   = keys_held[SDL_SCANCODE_X] || keys_held[SDL_SCANCODE_E] || keys_held[SDL_SCANCODE_LCTRL];
+    int p_bail   = prev_held[SDL_SCANCODE_X] || prev_held[SDL_SCANCODE_E] || prev_held[SDL_SCANCODE_LCTRL];
 
     if (game_state == 0 || game_state == 3) {
-        if ((keys_held[SDLK_LEFT] && !prev_held[SDLK_LEFT])) {
+        if ((keys_held[SDL_SCANCODE_LEFT] && !prev_held[SDL_SCANCODE_LEFT])) {
             current_stage = (current_stage + 7) % 8;
             load_stage(current_stage, 0);
             play_sfx(SFX_COIN);
         }
-        if ((keys_held[SDLK_RIGHT] && !prev_held[SDLK_RIGHT])) {
+        if ((keys_held[SDL_SCANCODE_RIGHT] && !prev_held[SDL_SCANCODE_RIGHT])) {
             current_stage = (current_stage + 1) % 8;
             load_stage(current_stage, 0);
             play_sfx(SFX_COIN);
         }
-        if ((keys_held[SDLK_RETURN] && !prev_held[SDLK_RETURN]) || (k_jump && !p_jump)) {
+        if ((keys_held[SDL_SCANCODE_RETURN] && !prev_held[SDL_SCANCODE_RETURN]) || (k_jump && !p_jump)) {
             game_state = 1;
             load_stage(current_stage, 0);
         }
@@ -817,7 +1243,7 @@ static void update_game(void) {
         }
     }
 
-    if (!player.on_ground && k_down && !prev_held[SDLK_DOWN] && !player.ground_pounding) {
+    if (!player.on_ground && k_down && !p_down && !player.ground_pounding) {
         player.ground_pounding = 1;
         player.gp_timer = 10;
         player.vx = 0;
@@ -1166,192 +1592,257 @@ static void update_game(void) {
     camera_x += (target_cam - camera_x) * 0.22f;
 }
 
-static void render_dino_sprite(int cx, int by, int dir, int dino_id, float anim, int mouth_full, float tongue_len) {
-    int r, g, b;
-    get_dino_rgb(dino_id, &r, &g, &b);
-    Uint32 body = rgb(r, g, b);
-    Uint32 belly = rgb(220, 252, 231);
+/* ============================================================================
+ * Hardware-Accelerated 720p HD Renderer
+ * ============================================================================ */
+static void render_dino_hd(float cx, float by, int dir, int dino_id, float anim, int mouth_full, float tongue_len) {
     int s = (dir >= 0) ? 1 : -1;
+    int frame = ((int)(anim * 1.4f)) & 1;
+    if (dino_id < 1 || dino_id > 4) dino_id = 1;
 
-    if (tongue_len > 0) {
-        int tx = (s > 0) ? (cx + 6) : (cx - 6 - (int)tongue_len);
-        fill_rect(tx, by - 10, (int)tongue_len, 3, rgb(251, 113, 133));
-        fill_circle(cx + s * (6 + (int)tongue_len), by - 9, 3, rgb(244, 63, 94));
+    if (tongue_len > 0.0f) {
+        float tx = (s > 0) ? (cx + 6.0f) : (cx - 6.0f - tongue_len);
+        fill_rect_hd(tx, by - 11.0f, tongue_len, 2.5f, rgb(251, 113, 133));
+        fill_circle_hd(cx + s * (6.0f + tongue_len), by - 9.8f, 3.2f, rgb(244, 63, 94));
     }
-    if (dino_id == DINO_BLUE) {
-        fill_circle(cx - s * 4, by - 11, 5, rgb(248, 250, 252));
+
+    /* Draw High-Res Pre-Baked Shaded Dino Companion Texture */
+    float dw = 26.0f, dh = 26.0f;
+    draw_tex_world(tex_dino[dino_id][frame], cx - dw * 0.5f, by - dh + 2.0f, dw, dh, s < 0, rgb(255, 255, 255));
+    if (mouth_full) {
+        fill_circle_hd(cx + s * 7.5f, by - 11.5f, 3.2f, (dino_id == DINO_RED) ? rgb(251, 146, 60) : rgb(134, 239, 172));
     }
-    int leg = (int)(sinf(anim * 2.2f) * 2.0f);
-    fill_rect(cx - s * 7, by - 6, 5, 3, body); /* tail */
-    fill_circle(cx, by - 6, 6, body);
-    fill_circle(cx + s * 2, by - 5, 4, belly);
-    fill_rect(cx - 3 + leg, by - 3, 3, 3, body);
-    fill_rect(cx + 1 - leg, by - 3, 3, 3, body);
-    fill_circle(cx + s * 4, by - 12, 4, body);
-    fill_circle(cx + s * 8, by - 11, mouth_full ? 5 : 4, body);
-    fill_rect(cx + s * 4, by - 14, 2, 2, rgb(255, 255, 255));
 }
 
 static void render_frame(void) {
     const StageDef *st = &STAGES[current_stage];
-    int cam_x = (int)(camera_x + 0.5f);
-    /* Gradient sky */
-    for (int y = 0; y < H; y += 2) {
-        float t = (float)y / (float)H;
+    float cam_x = camera_x;
+
+    /* 1. Smooth HD Sky Gradient + Sun/Moon Glow */
+    for (int y = 0; y < 72; y++) {
+        float t = (float)y / 72.0f;
         int r = (int)(st->sky_top[0] + (st->sky_bot[0] - st->sky_top[0]) * t);
         int g = (int)(st->sky_top[1] + (st->sky_bot[1] - st->sky_top[1]) * t);
         int b = (int)(st->sky_top[2] + (st->sky_bot[2] - st->sky_top[2]) * t);
-        fill_rect(0, y, W, 2, rgb(r, g, b));
+        SDL_SetRenderDrawColor(renderer, (Uint8)r, (Uint8)g, (Uint8)b, 255);
+        SDL_Rect band = {0, y * 10, HD_W, 10};
+        SDL_RenderFillRect(renderer, &band);
     }
+    draw_glow_hd(390.0f, 54.0f, 52.0f, rgba(254, 249, 195, 95));
+    fill_circle_hd(390.0f, 54.0f, 20.0f, rgba(254, 240, 138, 235));
 
-    /* Parallax hills */
-    Uint32 hf = rgb(st->hill_far[0], st->hill_far[1], st->hill_far[2]);
-    Uint32 hn = rgb(st->hill_near[0], st->hill_near[1], st->hill_near[2]);
+    /* 2. Soft Anti-Aliased Parallax Clouds & Layered Mountains */
     for (int i = -1; i < 6; i++) {
-        int hx = i * 110 - ((int)(cam_x * 0.2f) % 110);
-        fill_circle(hx + 55, H - 30, 58, hf);
-        int nx = i * 90 - ((int)(cam_x * 0.35f) % 90);
-        fill_circle(nx + 45, H - 15, 42, hn);
+        float clx = i * 115.0f - fmodf(cam_x * 0.12f, 115.0f);
+        float cly = 36.0f + (i % 2) * 16.0f;
+        fill_circle_hd(clx, cly, 14.0f, rgba(255, 255, 255, 190));
+        fill_circle_hd(clx + 11.0f, cly - 4.0f, 16.0f, rgba(255, 255, 255, 210));
+        fill_circle_hd(clx + 22.0f, cly, 13.0f, rgba(255, 255, 255, 190));
     }
 
-    /* Tiles */
-    int c1 = (cam_x / TILE) - 1;
-    int c2 = ((cam_x + W) / TILE) + 1;
+    Color hf = rgb(st->hill_far[0], st->hill_far[1], st->hill_far[2]);
+    Color hn = rgb(st->hill_near[0], st->hill_near[1], st->hill_near[2]);
+    for (int i = -1; i < 6; i++) {
+        float hx = i * 110.0f - fmodf(cam_x * 0.2f, 110.0f);
+        fill_circle_hd(hx + 55.0f, H - 22.0f, 62.0f, hf);
+        float nx = i * 90.0f - fmodf(cam_x * 0.35f, 90.0f);
+        fill_circle_hd(nx + 45.0f, H - 10.0f, 44.0f, hn);
+    }
+
+    /* 3. High-Resolution Shaded Tiles */
+    int c1 = (int)(cam_x / TILE) - 1;
+    int c2 = (int)((cam_x + W) / TILE) + 1;
     if (c1 < 0) c1 = 0;
     if (c2 >= MAP_W) c2 = MAP_W - 1;
 
-    Uint32 g_top = rgb(st->gnd_top[0], st->gnd_top[1], st->gnd_top[2]);
-    Uint32 g_bod = rgb(st->gnd_body[0], st->gnd_body[1], st->gnd_body[2]);
+    Color g_top = rgb(st->gnd_top[0], st->gnd_top[1], st->gnd_top[2]);
+    Color g_bod = rgb(st->gnd_body[0], st->gnd_body[1], st->gnd_body[2]);
 
     for (int ty = 0; ty < MAP_H; ty++) {
         for (int tx = c1; tx <= c2; tx++) {
             char c = map[ty][tx];
             if (c == '.') continue;
-            int sx = tx * TILE - cam_x;
-            int sy = ty * TILE - bump_off[ty][tx];
+            float sx = tx * TILE - cam_x;
+            float sy = ty * TILE - bump_off[ty][tx];
             if (c == '#' || c == 'I') {
-                fill_rect(sx, sy, TILE, TILE, (c == 'I') ? rgb(2, 132, 199) : g_bod);
+                fill_rect_hd(sx, sy, TILE + 0.4f, TILE + 0.4f, (c == 'I') ? rgb(2, 132, 199) : g_bod);
+                fill_rect_hd(sx + 2, sy + 5, TILE - 4, TILE - 7,
+                             (c == 'I') ? rgba(56, 189, 248, 90) : rgba(0, 0, 0, 45));
                 if (ty == 0 || !is_solid(get_tile(tx, ty - 1))) {
-                    fill_rect(sx, sy, TILE, 4, (c == 'I') ? rgb(224, 242, 254) : g_top);
+                    fill_rect_hd(sx, sy, TILE + 0.4f, 4.5f, (c == 'I') ? rgb(224, 242, 254) : g_top);
                 }
             } else if (c == 'B') {
-                fill_rect(sx + 1, sy + 1, TILE - 2, TILE - 2, rgb(217, 119, 6));
+                draw_tex_world(tex_brick, sx, sy, TILE, TILE, 0, rgb(255, 255, 255));
             } else if (c == '?' || c == 'M') {
-                fill_rect(sx + 1, sy + 1, TILE - 2, TILE - 2, rgb(250, 204, 21));
-                draw_text(sx + 5, sy + 4, "?", rgb(113, 63, 18), 1);
+                draw_tex_world(tex_qblock, sx, sy, TILE, TILE, 0, rgb(255, 255, 255));
             } else if (c == 'E' || c == 'D') {
-                int r, g, b;
-                get_dino_rgb((c == 'E') ? st->default_dino : st->second_dino, &r, &g, &b);
-                fill_rect(sx + 1, sy + 1, TILE - 2, TILE - 2, rgb(248, 250, 252));
-                fill_circle(sx + 5, sy + 6, 2, rgb(r, g, b));
-                fill_circle(sx + 11, sy + 10, 2, rgb(r, g, b));
+                int dt = (c == 'E') ? st->default_dino : st->second_dino;
+                draw_tex_world(tex_egg[dt], sx, sy, TILE, TILE, 0, rgb(255, 255, 255));
             } else if (c == 'U') {
-                fill_rect(sx + 1, sy + 1, TILE - 2, TILE - 2, rgb(71, 85, 105));
+                draw_tex_world(tex_used, sx, sy, TILE, TILE, 0, rgb(255, 255, 255));
             } else if (c == 'P') {
-                fill_rect(sx, sy, TILE, TILE, rgb(16, 185, 129));
+                draw_tex_world(tex_pipe, sx, sy, TILE, TILE, 0, rgb(255, 255, 255));
+                if (get_tile(tx, ty - 1) != 'P') {
+                    draw_tex_world(tex_pipe, sx - 1.5f, sy, TILE + 3.0f, 6.0f, 0, rgb(52, 211, 153));
+                }
             } else if (c == 'F') {
-                fill_circle(sx + 8, sy + 9, 6, rgb(21, 128, 61));
-                fill_circle(sx + 6, sy + 7, 2, rgb(244, 63, 94));
-                fill_circle(sx + 10, sy + 9, 2, rgb(244, 63, 94));
+                draw_tex_world(tex_berry, sx - 1.0f, sy - 1.0f, TILE + 2.0f, TILE + 2.0f, 0, rgb(255, 255, 255));
             } else if (c == 'C') {
-                fill_circle(sx + 8, sy + 8, 4, rgb(253, 224, 71));
+                float pulse = 0.75f + 0.25f * fabsf(sinf(global_tick * 0.1f + tx));
+                float cw = TILE * pulse;
+                draw_tex_world(tex_coin, sx + (TILE - cw) * 0.5f, sy, cw, TILE, 0, rgb(255, 255, 255));
             } else if (c == 'J') {
-                fill_rect(sx + 2, sy + 6, TILE - 4, 4, rgb(239, 68, 68));
-                fill_rect(sx + 4, sy + 10, TILE - 8, 6, rgb(253, 224, 71));
+                fill_rect_hd(sx + 1, sy + 5, TILE - 2, 4, rgb(239, 68, 68));
+                fill_rect_hd(sx + 3, sy + 9, TILE - 6, 7, rgb(250, 204, 21));
             } else if (c == 'K') {
-                fill_rect(sx + 7, sy - 8, 2, 24, rgb(248, 250, 252));
-                fill_rect(sx + 9, sy - 8, 8, 6, rgb(59, 130, 246));
+                fill_rect_hd(sx + 7, sy - 10, 2.2f, 26, rgb(248, 250, 252));
+                fill_circle_hd(sx + 8.1f, sy - 11, 2.5f, rgb(250, 204, 21));
+                fill_rect_hd(sx + 9, sy - 10, 11, 7, (checkpoint_x > 0) ? rgb(34, 197, 94) : rgb(59, 130, 246));
             } else if (c == 'G') {
-                fill_rect(sx + 7, sy, 2, TILE, rgb(248, 250, 252));
-                if (ty == 4) fill_rect(sx + 9, sy + 2, 14, 8, rgb(16, 185, 129));
+                fill_rect_hd(sx + 7, sy, 2.5f, TILE + 0.5f, rgb(248, 250, 252));
+                if (ty == 4) {
+                    fill_circle_hd(sx + 8.2f, sy, 4.0f, rgb(250, 204, 21));
+                    fill_rect_hd(sx + 9.5f, sy + 2, 16, 9, rgb(16, 185, 129));
+                }
             }
         }
     }
 
-    /* Entities */
+    /* 4. High-Resolution Entities */
     for (int i = 0; i < MAX_ENTITIES; i++) {
         Entity *e = &entities[i];
         if (!e->active) continue;
-        int sx = (int)(e->x + 0.5f) - cam_x;
-        int sy = (int)(e->y + 0.5f);
+        float sx = e->x - cam_x;
+        float sy = e->y;
         if (e->type == ENT_PLATFORM) {
-            fill_rect(sx, sy, e->w, e->h, rgb(251, 191, 36));
+            fill_rect_hd(sx, sy, e->w, e->h, rgb(245, 158, 11));
+            fill_rect_hd(sx + 1, sy + 1, e->w - 2, 2.5f, rgb(254, 240, 138));
         } else if (e->type == ENT_DINO_MOUNT) {
-            render_dino_sprite(sx + 8, sy + e->h, e->dir, e->dino_type, global_tick * 0.1f, 0, 0);
+            render_dino_hd(sx + 8.0f, sy + e->h, e->dir, e->dino_type, global_tick * 0.1f, 0, 0);
         } else if (e->type == ENT_BOSS) {
-            fill_rect(sx, sy, e->w, e->h, (e->invuln % 4 > 1) ? rgb(255, 255, 255) : rgb(220, 38, 38));
-            fill_rect(sx + 4, sy - 6, e->w - 8, 4, rgb(251, 191, 36));
-        } else {
-            Uint32 ec = (e->type == ENT_KOOPA || e->type == ENT_SHELL) ? rgb(34, 197, 94) :
-                        (e->type == ENT_FLYER) ? rgb(236, 72, 153) : rgb(168, 85, 247);
-            fill_rect(sx, sy, e->w, e->h, ec);
+            Color tint = (e->invuln % 4 > 1) ? rgb(255, 180, 180) : rgb(255, 255, 255);
+            draw_tex_world(tex_boss, sx - 3, sy - 4, e->w + 6, e->h + 6, e->vx > 0, tint);
+            /* Boss HP bar */
+            fill_rect_hd(sx - 2, sy - 9, e->w + 4, 4, rgb(15, 23, 42));
+            fill_rect_hd(sx - 1, sy - 8, (e->w + 2) * ((float)e->hp / (float)e->max_hp), 2.2f, rgb(239, 68, 68));
+        } else if (e->type == ENT_WALKER) {
+            draw_tex_world(tex_walker, sx - 2, sy - 2, e->w + 4, e->h + 3, e->vx > 0, rgb(255, 255, 255));
+        } else if (e->type == ENT_KOOPA) {
+            draw_tex_world(tex_koopa, sx - 2, sy - 3, e->w + 4, e->h + 4, e->vx < 0, rgb(255, 255, 255));
+        } else if (e->type == ENT_SHELL) {
+            draw_tex_world(tex_shell, sx - 1, sy - 2, e->w + 2, e->h + 3, 0, rgb(255, 255, 255));
+        } else if (e->type == ENT_FLYER) {
+            draw_tex_world(tex_flyer, sx - 2, sy - 2, e->w + 4, e->h + 4, e->vx < 0, rgb(255, 255, 255));
+        } else if (e->type == ENT_POKEY) {
+            for (int seg = 0; seg < 3; seg++) {
+                fill_circle_hd(sx + 7, sy + e->h - 4 - seg * 7, 6.5f, rgb(234, 179, 8));
+            }
+        } else if (e->type == ENT_MUSHROOM || e->type == ENT_FLOWER) {
+            fill_circle_hd(sx + 7, sy + 7, 7.0f, (e->type == ENT_FLOWER) ? rgb(249, 115, 22) : rgb(239, 68, 68));
+            fill_circle_hd(sx + 5, sy + 5, 2.5f, rgb(255, 255, 255));
         }
     }
 
-    /* Fireballs & Shockwaves */
+    /* 5. Glowing Fireballs, Shockwave Rings & Particles */
     for (int i = 0; i < MAX_FIREBALLS; i++) {
         if (fireballs[i].active) {
-            fill_circle((int)(fireballs[i].x + 0.5f) - cam_x, (int)(fireballs[i].y + 0.5f), fireballs[i].r, rgb(239, 68, 68));
+            float fx = fireballs[i].x - cam_x;
+            float fy = fireballs[i].y;
+            draw_glow_hd(fx, fy, fireballs[i].r * 2.4f, rgba(251, 146, 60, 160));
+            fill_circle_hd(fx, fy, fireballs[i].r, rgb(239, 68, 68));
+            fill_circle_hd(fx, fy, fireballs[i].r * 0.55f, rgb(254, 240, 138));
         }
     }
     for (int i = 0; i < MAX_SHOCKWAVES; i++) {
         if (shockwaves[i].active) {
-            int r = (int)shockwaves[i].r;
-            int sx = (int)(shockwaves[i].x + 0.5f) - cam_x;
-            int sy = (int)(shockwaves[i].y + 0.5f);
-            fill_rect(sx - r, sy - 2, 4, 4, shockwaves[i].color);
-            fill_rect(sx + r, sy - 2, 4, 4, shockwaves[i].color);
+            float r = shockwaves[i].r;
+            float sx = shockwaves[i].x - cam_x;
+            float sy = shockwaves[i].y;
+            draw_tex_world(tex_ring, sx - r, sy - r * 0.45f, r * 2.0f, r * 0.9f, 0, shockwaves[i].color);
+        }
+    }
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        if (particles[i].active) {
+            fill_circle_hd(particles[i].x - cam_x, particles[i].y, 2.5f, particles[i].color);
         }
     }
 
-    /* Player & Rideable Dino */
+    /* 6. High-Res Hero Leo & Rideable Dino Mount */
     if (!(player.invuln > 0 && (player.invuln / 4) % 2 == 1)) {
-        int px = (int)(player.x + player.w / 2 + 0.5f) - cam_x;
-        int py = (int)(player.y + player.h + 0.5f);
-        int leo_y = player.dino ? (py - 8) : py;
-        Uint32 tunic = (player.star_timer > 0 && (global_tick % 4 < 2)) ? rgb(253, 224, 71) :
-                       (player.power == 2) ? rgb(248, 250, 252) : rgb(239, 68, 68);
-        fill_rect(px - 4, leo_y - 10, 8, 7, tunic);
-        fill_circle(px, leo_y - 12, 3, rgb(254, 215, 170));
-        fill_rect(px - 4, leo_y - 15, 9, 2, tunic);
+        float px = player.x + player.w * 0.5f - cam_x;
+        float py = player.y + player.h;
+        float leo_y = player.dino ? (py - 8.5f) : py;
+        int p_idx = (player.power >= 2) ? 2 : (player.power == 1 ? 1 : 0);
+        int l_frame = ((int)(player.anim_frame * 1.5f)) & 1;
+        Color l_tint = (player.star_timer > 0 && (global_tick % 4 < 2)) ? rgb(254, 240, 138) : rgb(255, 255, 255);
+        float lw = 18.0f, lh = (player.power == 0 && !player.dino) ? 15.0f : 19.0f;
+        draw_tex_world(tex_leo[p_idx][l_frame], px - lw * 0.5f, leo_y - lh + 1.0f, lw, lh, player.dir < 0, l_tint);
+
         if (player.dino) {
-            render_dino_sprite(px, py, player.dir, player.dino, player.anim_frame, player.dino_mouth > 0, player.tongue_len);
+            render_dino_hd(px, py, player.dir, player.dino, player.anim_frame, player.dino_mouth > 0, player.tongue_len);
         }
     }
 
-    /* HUD */
-    fill_rect(6, 4, W - 12, 16, rgb(15, 23, 42));
+    /* 7. Crisp 720p HD HUD Bar */
+    fill_rect_hd(5, 3, W - 10, 17, rgba(15, 23, 42, 220));
+    fill_rect_hd(5, 19.5f, W - 10, 1.0f, rgba(56, 189, 248, 160));
     char hud[128];
-    snprintf(hud, sizeof(hud), "LEO X%d  COINS:%02d  SCORE:%06d  %s  DINO:%s",
+    snprintf(hud, sizeof(hud), "LEO X%d   COINS:%02d   SCORE:%06d   STAGE %s   DINO: %s",
              lives, coins, score, st->code, dino_name(player.dino));
-    draw_text(12, 8, hud, rgb(253, 224, 71), 1);
+    draw_text(12, 8, hud, rgb(253, 224, 71), 1.05f);
 
     if (banner_timer > 0) {
-        fill_rect(W / 2 - 140, 24, 280, 14, rgb(15, 23, 42));
-        draw_text(W / 2 - 130, 28, banner_text, rgb(52, 211, 153), 1);
+        fill_rect_hd(W * 0.5f - 148, 24, 296, 15, rgba(15, 23, 42, 230));
+        draw_text(W * 0.5f - 138, 28, banner_text, rgb(52, 211, 153), 1.0f);
     }
 
     if (game_state == 0 || game_state == 3) {
-        fill_rect(W / 2 - 170, H / 2 - 65, 340, 130, rgb(15, 23, 42));
-        draw_text(W / 2 - 140, H / 2 - 50, "SUPER LEO WORLD: DINO ISLAND", rgb(253, 224, 71), 2);
-        draw_text(W / 2 - 125, H / 2 - 20, "4 RIDEABLE DINOS - 8 STAGES (1-1 TO 4-2)", rgb(52, 211, 153), 1);
-        draw_text(W / 2 - 135, H / 2 + 0,  "GREEN:TONGUE/FLUTTER  RED:3X FIREBALLS", rgb(248, 250, 252), 1);
-        draw_text(W / 2 - 135, H / 2 + 14, "BLUE:WINGED FLIGHT    YELLOW:QUAKE STOMP", rgb(248, 250, 252), 1);
+        fill_rect_hd(W * 0.5f - 178, H * 0.5f - 70, 356, 142, rgba(15, 23, 42, 238));
+        fill_rect_hd(W * 0.5f - 178, H * 0.5f - 70, 356, 2.0f, rgb(250, 204, 21));
+        fill_rect_hd(W * 0.5f - 178, H * 0.5f + 70, 356, 2.0f, rgb(56, 189, 248));
+        draw_text(W * 0.5f - 152, H * 0.5f - 54, "SUPER LEO WORLD: DINO ISLAND", rgb(253, 224, 71), 1.85f);
+        draw_text(W * 0.5f - 134, H * 0.5f - 28, "720P HD EDITION - 4 RIDEABLE DINOS - 8 STAGES", rgb(52, 211, 153), 1.0f);
+        draw_text(W * 0.5f - 145, H * 0.5f - 8,  "EMERALD:TONGUE/FLUTTER   BLAZE:3X FIREBALLS", rgb(248, 250, 252), 1.0f);
+        draw_text(W * 0.5f - 145, H * 0.5f + 6,  "SKY:4-FLAP FLIGHT        QUAKE:SHOCKWAVE STOMP", rgb(248, 250, 252), 1.0f);
         char sel[64];
         snprintf(sel, sizeof(sel), "< STAGE %s: %s >", st->code, st->title);
-        draw_text(W / 2 - 115, H / 2 + 32, sel, rgb(56, 189, 248), 1);
-        draw_text(W / 2 - 110, H / 2 + 48, "PRESS ENTER OR SPACE TO START!", rgb(251, 191, 36), 1);
+        draw_text(W * 0.5f - 122, H * 0.5f + 27, sel, rgb(56, 189, 248), 1.08f);
+        draw_text(W * 0.5f - 118, H * 0.5f + 46, "PRESS ENTER OR SPACE TO START!", rgb(251, 191, 36), 1.1f);
     }
 
-    SDL_Flip(screen);
+    SDL_RenderPresent(renderer);
 }
 
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) return 1;
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) < 0) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
     SDL_ShowCursor(SDL_DISABLE);
-    screen = SDL_SetVideoMode(W, H, 32, SDL_SWSURFACE | SDL_FULLSCREEN);
-    if (!screen) screen = SDL_SetVideoMode(W, H, 32, SDL_SWSURFACE);
+
+    if (SDL_NumJoysticks() > 0) {
+        SDL_JoystickOpen(0);
+    }
+
+    window = SDL_CreateWindow("Super Leo World HD: Dino Island",
+                              SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                              HD_W, HD_H,
+                              SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
+    if (!window) {
+        window = SDL_CreateWindow("Super Leo World HD: Dino Island",
+                                  SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                  HD_W, HD_H, SDL_WINDOW_FULLSCREEN);
+    }
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!renderer) {
+        renderer = SDL_CreateRenderer(window, -1, 0);
+    }
+    SDL_RenderSetLogicalSize(renderer, HD_W, HD_H);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    bake_hd_textures();
 
     SDL_AudioSpec want;
     memset(&want, 0, sizeof(want));
@@ -1374,13 +1865,26 @@ int main(int argc, char **argv) {
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_QUIT) running = 0;
             else if (ev.type == SDL_KEYDOWN) {
-                if (ev.key.keysym.sym == SDLK_ESCAPE) {
+                SDL_Scancode sc = ev.key.keysym.scancode;
+                if (sc == SDL_SCANCODE_ESCAPE) {
                     if (game_state == 0) running = 0;
                     else { game_state = 0; load_stage(current_stage, 0); }
                 }
-                if (ev.key.keysym.sym < SDLK_LAST) keys_held[ev.key.keysym.sym] = 1;
+                if (sc < SDL_NUM_SCANCODES) keys_held[sc] = 1;
             } else if (ev.type == SDL_KEYUP) {
-                if (ev.key.keysym.sym < SDLK_LAST) keys_held[ev.key.keysym.sym] = 0;
+                SDL_Scancode sc = ev.key.keysym.scancode;
+                if (sc < SDL_NUM_SCANCODES) keys_held[sc] = 0;
+            } else if (ev.type == SDL_JOYBUTTONDOWN || ev.type == SDL_JOYBUTTONUP) {
+                int down = (ev.type == SDL_JOYBUTTONDOWN) ? 1 : 0;
+                if (ev.jbutton.button == 0 || ev.jbutton.button == 1) keys_held[SDL_SCANCODE_SPACE] = down;
+                else if (ev.jbutton.button == 2 || ev.jbutton.button == 3) keys_held[SDL_SCANCODE_Z] = down;
+                else if (ev.jbutton.button == 4 || ev.jbutton.button == 5) keys_held[SDL_SCANCODE_X] = down;
+                else if (ev.jbutton.button == 7 || ev.jbutton.button == 9) keys_held[SDL_SCANCODE_RETURN] = down;
+            } else if (ev.type == SDL_JOYHATMOTION) {
+                keys_held[SDL_SCANCODE_LEFT]  = (ev.jhat.value & SDL_HAT_LEFT)  ? 1 : 0;
+                keys_held[SDL_SCANCODE_RIGHT] = (ev.jhat.value & SDL_HAT_RIGHT) ? 1 : 0;
+                keys_held[SDL_SCANCODE_UP]    = (ev.jhat.value & SDL_HAT_UP)    ? 1 : 0;
+                keys_held[SDL_SCANCODE_DOWN]  = (ev.jhat.value & SDL_HAT_DOWN)  ? 1 : 0;
             }
         }
         update_game();
