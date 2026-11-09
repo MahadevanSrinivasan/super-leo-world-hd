@@ -1155,10 +1155,15 @@ static void update_game(void) {
         }
     }
 
-    float target_cam = player.x - W * 0.34f + player.dir * 22.0f;
+    float screen_px = player.x - camera_x;
+    float left_bound = W * 0.33f;
+    float right_bound = W * 0.47f;
+    float target_cam = camera_x;
+    if (screen_px < left_bound) target_cam = player.x - left_bound;
+    else if (screen_px > right_bound) target_cam = player.x - right_bound;
     if (target_cam < 0) target_cam = 0;
     if (target_cam > MAP_W * TILE - W) target_cam = MAP_W * TILE - W;
-    camera_x += (target_cam - camera_x) * 0.12f;
+    camera_x += (target_cam - camera_x) * 0.22f;
 }
 
 static void render_dino_sprite(int cx, int by, int dir, int dino_id, float anim, int mouth_full, float tongue_len) {
@@ -1189,6 +1194,7 @@ static void render_dino_sprite(int cx, int by, int dir, int dino_id, float anim,
 
 static void render_frame(void) {
     const StageDef *st = &STAGES[current_stage];
+    int cam_x = (int)(camera_x + 0.5f);
     /* Gradient sky */
     for (int y = 0; y < H; y += 2) {
         float t = (float)y / (float)H;
@@ -1202,15 +1208,15 @@ static void render_frame(void) {
     Uint32 hf = rgb(st->hill_far[0], st->hill_far[1], st->hill_far[2]);
     Uint32 hn = rgb(st->hill_near[0], st->hill_near[1], st->hill_near[2]);
     for (int i = -1; i < 6; i++) {
-        int hx = i * 110 - ((int)(camera_x * 0.2f) % 110);
+        int hx = i * 110 - ((int)(cam_x * 0.2f) % 110);
         fill_circle(hx + 55, H - 30, 58, hf);
-        int nx = i * 90 - ((int)(camera_x * 0.35f) % 90);
+        int nx = i * 90 - ((int)(cam_x * 0.35f) % 90);
         fill_circle(nx + 45, H - 15, 42, hn);
     }
 
     /* Tiles */
-    int c1 = (int)(camera_x / TILE) - 1;
-    int c2 = (int)((camera_x + W) / TILE) + 1;
+    int c1 = (cam_x / TILE) - 1;
+    int c2 = ((cam_x + W) / TILE) + 1;
     if (c1 < 0) c1 = 0;
     if (c2 >= MAP_W) c2 = MAP_W - 1;
 
@@ -1221,7 +1227,7 @@ static void render_frame(void) {
         for (int tx = c1; tx <= c2; tx++) {
             char c = map[ty][tx];
             if (c == '.') continue;
-            int sx = tx * TILE - (int)camera_x;
+            int sx = tx * TILE - cam_x;
             int sy = ty * TILE - bump_off[ty][tx];
             if (c == '#' || c == 'I') {
                 fill_rect(sx, sy, TILE, TILE, (c == 'I') ? rgb(2, 132, 199) : g_bod);
@@ -1266,8 +1272,8 @@ static void render_frame(void) {
     for (int i = 0; i < MAX_ENTITIES; i++) {
         Entity *e = &entities[i];
         if (!e->active) continue;
-        int sx = (int)(e->x - camera_x);
-        int sy = (int)e->y;
+        int sx = (int)(e->x + 0.5f) - cam_x;
+        int sy = (int)(e->y + 0.5f);
         if (e->type == ENT_PLATFORM) {
             fill_rect(sx, sy, e->w, e->h, rgb(251, 191, 36));
         } else if (e->type == ENT_DINO_MOUNT) {
@@ -1285,14 +1291,14 @@ static void render_frame(void) {
     /* Fireballs & Shockwaves */
     for (int i = 0; i < MAX_FIREBALLS; i++) {
         if (fireballs[i].active) {
-            fill_circle((int)(fireballs[i].x - camera_x), (int)fireballs[i].y, fireballs[i].r, rgb(239, 68, 68));
+            fill_circle((int)(fireballs[i].x + 0.5f) - cam_x, (int)(fireballs[i].y + 0.5f), fireballs[i].r, rgb(239, 68, 68));
         }
     }
     for (int i = 0; i < MAX_SHOCKWAVES; i++) {
         if (shockwaves[i].active) {
             int r = (int)shockwaves[i].r;
-            int sx = (int)(shockwaves[i].x - camera_x);
-            int sy = (int)shockwaves[i].y;
+            int sx = (int)(shockwaves[i].x + 0.5f) - cam_x;
+            int sy = (int)(shockwaves[i].y + 0.5f);
             fill_rect(sx - r, sy - 2, 4, 4, shockwaves[i].color);
             fill_rect(sx + r, sy - 2, 4, 4, shockwaves[i].color);
         }
@@ -1300,8 +1306,8 @@ static void render_frame(void) {
 
     /* Player & Rideable Dino */
     if (!(player.invuln > 0 && (player.invuln / 4) % 2 == 1)) {
-        int px = (int)(player.x + player.w / 2 - camera_x);
-        int py = (int)(player.y + player.h);
+        int px = (int)(player.x + player.w / 2 + 0.5f) - cam_x;
+        int py = (int)(player.y + player.h + 0.5f);
         int leo_y = player.dino ? (py - 8) : py;
         Uint32 tunic = (player.star_timer > 0 && (global_tick % 4 < 2)) ? rgb(253, 224, 71) :
                        (player.power == 2) ? rgb(248, 250, 252) : rgb(239, 68, 68);

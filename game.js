@@ -1460,9 +1460,19 @@
       if (p.life <= 0) particles.splice(i, 1);
     }
 
-    // Smooth 1080p Camera tracking with look-ahead
-    const targetCamX = Math.max(0, Math.min(MAP_W * TILE - W, player.x - W * 0.34 + player.dir * 90));
-    cameraX += (targetCamX - cameraX) * 0.12;
+    // Smooth Deadzone Camera (no abrupt lurch when turning Left/Right!)
+    const screenPlayerX = player.x - cameraX;
+    const leftBound = W * 0.33;
+    const rightBound = W * 0.47;
+    let targetCamX = cameraX;
+    if (screenPlayerX < leftBound) {
+      targetCamX = player.x - leftBound;
+    } else if (screenPlayerX > rightBound) {
+      targetCamX = player.x - rightBound;
+    }
+    targetCamX = Math.max(0, Math.min(MAP_W * TILE - W, targetCamX));
+    cameraX += (targetCamX - cameraX) * 0.22;
+    const camX = Math.round(cameraX);
   }
 
   // =========================================================================
@@ -1478,7 +1488,7 @@
     ctx.closePath();
   }
 
-  function renderBackground(st) {
+  function renderBackground(st, camX) {
     // 1. Multi-stop HD Sky Gradient
     const skyGrad = ctx.createLinearGradient(0, 0, 0, H);
     skyGrad.addColorStop(0, st.skyTop);
@@ -1491,7 +1501,7 @@
     if (st.theme === "cave" || st.theme === "night" || st.theme === "castle") {
       ctx.fillStyle = "rgba(255,255,255,0.75)";
       for (let i = 0; i < 45; i++) {
-        const sx = ((i * 197 - cameraX * 0.05) % W + W) % W;
+        const sx = ((i * 197 - camX * 0.05) % W + W) % W;
         const sy = (i * 89) % (H * 0.55);
         const sr = (i % 3) + 1.5;
         ctx.beginPath();
@@ -1513,8 +1523,8 @@
     ctx.fillStyle = st.hillFar;
     ctx.beginPath();
     ctx.moveTo(0, H);
-    for (let x = -200; x <= W + 200; x += 260) {
-      const wx = x - ((cameraX * 0.15) % 260);
+    for (let x = -260; x <= W + 260; x += 260) {
+      const wx = x - (((camX * 0.15) % 260 + 260) % 260);
       ctx.lineTo(wx, H - 360);
       ctx.quadraticCurveTo(wx + 130, H - 590, wx + 260, H - 360);
     }
@@ -1525,8 +1535,8 @@
     ctx.fillStyle = st.hillNear;
     ctx.beginPath();
     ctx.moveTo(0, H);
-    for (let x = -220; x <= W + 220; x += 320) {
-      const wx = x - ((cameraX * 0.32) % 320);
+    for (let x = -320; x <= W + 320; x += 320) {
+      const wx = x - (((camX * 0.32) % 320 + 320) % 320);
       ctx.quadraticCurveTo(wx + 160, H - 420, wx + 320, H - 190);
     }
     ctx.lineTo(W, H);
@@ -1536,7 +1546,7 @@
     if (st.theme !== "cave") {
       ctx.fillStyle = "rgba(255, 255, 255, 0.82)";
       for (let i = 0; i < 7; i++) {
-        const cx = (((i * 340 - cameraX * 0.22 - globalTick * 0.3) % (W + 300)) + (W + 300)) % (W + 300) - 150;
+        const cx = (((i * 340 - camX * 0.22 - globalTick * 0.3) % (W + 300)) + (W + 300)) % (W + 300) - 150;
         const cy = 110 + (i % 3) * 85;
         ctx.beginPath();
         ctx.arc(cx, cy, 42, 0, Math.PI * 2);
@@ -1548,15 +1558,15 @@
     ctx.restore();
   }
 
-  function renderTiles(st) {
-    const startCol = Math.max(0, Math.floor(cameraX / TILE) - 1);
-    const endCol = Math.min(MAP_W - 1, Math.ceil((cameraX + W) / TILE) + 1);
+  function renderTiles(st, camX) {
+    const startCol = Math.max(0, Math.floor(camX / TILE) - 1);
+    const endCol = Math.min(MAP_W - 1, Math.ceil((camX + W) / TILE) + 1);
 
     for (let ty = 0; ty < MAP_H; ty++) {
       for (let tx = startCol; tx <= endCol; tx++) {
         const ch = map[ty][tx];
         if (ch === ".") continue;
-        const sx = Math.round(tx * TILE - cameraX);
+        const sx = tx * TILE - camX;
         const sy = Math.round(ty * TILE - bumpOffsets[ty][tx]);
 
         if (ch === "#" || ch === "I") {
@@ -1779,11 +1789,11 @@
     ctx.restore();
   }
 
-  function renderLeoAndDino() {
+  function renderLeoAndDino(camX) {
     if (player.invuln > 0 && Math.floor(player.invuln / 4) % 2 === 1) return;
 
-    const cx = Math.round(player.x + player.w / 2 - cameraX);
-    const bottomY = Math.round(player.y + player.h);
+    const cx = player.x + player.w / 2 - camX;
+    const bottomY = player.y + player.h;
 
     ctx.save();
     ctx.translate(cx, bottomY);
@@ -1862,11 +1872,11 @@
     ctx.restore();
   }
 
-  function renderEntities() {
+  function renderEntities(camX) {
     for (const e of entities) {
       if (!e.active) continue;
-      const sx = Math.round(e.x - cameraX);
-      const sy = Math.round(e.y);
+      const sx = e.x - camX;
+      const sy = e.y;
       if (sx + e.w < -120 || sx > W + 120) continue;
 
       if (e.type === "platform") {
@@ -2027,8 +2037,9 @@
 
   function renderFrame() {
     const st = STAGES[currentStage];
-    renderBackground(st);
-    renderTiles(st);
+    const camX = cameraX;
+    renderBackground(st, camX);
+    renderTiles(st, camX);
 
     // Shockwaves
     shockwaves.forEach((sw) => {
@@ -2037,7 +2048,7 @@
       ctx.globalAlpha = sw.alpha;
       ctx.lineWidth = 8;
       ctx.beginPath();
-      ctx.arc(sw.x - cameraX, sw.y, sw.r, 0, Math.PI * 2);
+      ctx.arc(sw.x - camX, sw.y, sw.r, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
     });
@@ -2047,17 +2058,17 @@
       ctx.save();
       ctx.fillStyle = "#ef4444";
       ctx.beginPath();
-      ctx.arc(f.x - cameraX, f.y, f.r, 0, Math.PI * 2);
+      ctx.arc(f.x - camX, f.y, f.r, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = "#fde047";
       ctx.beginPath();
-      ctx.arc(f.x - cameraX, f.y, f.r * 0.55, 0, Math.PI * 2);
+      ctx.arc(f.x - camX, f.y, f.r * 0.55, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     });
 
-    renderEntities();
-    renderLeoAndDino();
+    renderEntities(camX);
+    renderLeoAndDino(camX);
 
     // Particles & Floating Score Popups
     particles.forEach((p) => {
@@ -2067,11 +2078,11 @@
         ctx.fillStyle = p.color;
         ctx.font = "900 24px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(p.text, p.x - cameraX, p.y);
+        ctx.fillText(p.text, p.x - camX, p.y);
       } else {
         ctx.fillStyle = p.color;
         ctx.beginPath();
-        ctx.arc(p.x - cameraX, p.y, p.size, 0, Math.PI * 2);
+        ctx.arc(p.x - camX, p.y, p.size, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.restore();
@@ -2239,17 +2250,35 @@
     let actT = null;
 
     activeTouches.forEach((t) => {
-      const dx = t.curX - t.startX;
+      let dx = t.curX - t.startX;
       const dy = t.curY - t.startY;
       if (t.role === "action" && activeTouches.size === 1 && Math.abs(dx) > (tiltEnabled ? 28 : 18)) {
         t.role = "move";
       }
       if (t.role === "move") {
         moveT = t;
-        if (dx < -8) gestureState.left = true;
-        else if (dx > 8) gestureState.right = true;
-        else if (t.relX < 0.24) gestureState.left = true;
-        else gestureState.right = true;
+        // Dynamic floating thumbstick leash: base follows thumb within 26px so reversing direction is instant!
+        const maxLeash = 26;
+        if (dx < -maxLeash) {
+          t.startX = t.curX + maxLeash;
+          dx = -maxLeash;
+        } else if (dx > maxLeash) {
+          t.startX = t.curX - maxLeash;
+          dx = maxLeash;
+        }
+        if (Math.abs(dx) > 5) {
+          t.hasDragged = true;
+        }
+
+        if (dx < -5) {
+          gestureState.left = true;
+        } else if (dx > 5) {
+          gestureState.right = true;
+        } else if (!t.hasDragged) {
+          // Only use tap-zone direction before the user starts sliding their thumb
+          if (t.relX < 0.22) gestureState.left = true;
+          else if (t.relX > 0.28) gestureState.right = true;
+        }
 
         if (dy < -20) gestureState.jump = true;
         else if (dy > 24) gestureState.down = true;
