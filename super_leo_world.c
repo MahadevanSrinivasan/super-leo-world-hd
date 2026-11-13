@@ -23,9 +23,9 @@
 #define MAP_H 17
 
 /* Hardware-Accelerated 16:9 Streaming Render Target (scaled by VideoCore IV GPU to 1280x720) */
-#define REN_W 480
-#define REN_H 270
-#define SCALE 0.25f
+#define REN_W 384
+#define REN_H 216
+#define SCALE 0.2f
 
 #define MAX_ENTITIES 96
 #define MAX_FIREBALLS 16
@@ -1755,8 +1755,8 @@ static void render_frame(void) {
 
     /* Fluffy Clouds */
     if (st->theme != 1) {
-        for (int i = 0; i < 6; i++) {
-            float cx = fmodf(i * 360.0f - cam_x * 0.22f - global_tick * 0.3f, W + 300.0f);
+        for (int i = 0; i < 4; i++) {
+            float cx = fmodf(i * 520.0f - cam_x * 0.22f - global_tick * 0.3f, W + 300.0f);
             if (cx < 0) cx += W + 300.0f;
             cx -= 150.0f;
             float cy = 95.0f + (i % 3) * 80.0f;
@@ -1897,39 +1897,39 @@ static void render_frame(void) {
     }
 
     /* 7. HUD Bar (Matches game.js renderHUD!) */
-    fill_rect_ren(6, 4, REN_W - 12, 18, rgba(8, 12, 20, 200));
+    fill_rect_ren(4, 3, REN_W - 8, 16, rgba(8, 12, 20, 200));
     char hud_left[96];
-    snprintf(hud_left, sizeof(hud_left), "LEO X%d COINS:%02d SCORE:%06d %s",
+    snprintf(hud_left, sizeof(hud_left), "LEO:%d C:%02d S:%05d %s",
              lives, coins, score, st->code);
-    draw_text_ren(12, 9, hud_left, rgb(248, 250, 252), 1);
+    draw_text_ren(10, 8, hud_left, rgb(248, 250, 252), 1);
 
     if (player.dino) {
         char d_msg[48];
-        snprintf(d_msg, sizeof(d_msg), "DINO:%s%s", DINO_DEFS[player.dino].name, player.dino_mouth ? " [SPIT:Z]" : "");
-        draw_text_ren(REN_W - (int)strlen(d_msg) * 6 - 12, 9, d_msg, DINO_DEFS[player.dino].body, 1);
+        snprintf(d_msg, sizeof(d_msg), "%s%s", DINO_DEFS[player.dino].name, player.dino_mouth ? "[Z]" : "");
+        draw_text_ren(REN_W - (int)strlen(d_msg) * 6 - 10, 8, d_msg, DINO_DEFS[player.dino].body, 1);
     } else {
-        draw_text_ren(REN_W - 148, 9, "HIT EGG FOR DINO!", rgb(253, 224, 71), 1);
+        draw_text_ren(REN_W - 114, 8, "HIT EGG FOR DINO!", rgb(253, 224, 71), 1);
     }
 
     if (banner_timer > 0 && banner_text[0]) {
-        fill_rect_ren(REN_W / 2 - 150, 26, 300, 16, rgba(8, 12, 20, 220));
-        draw_text_centered(REN_W / 2, 30, banner_text, rgb(253, 224, 71), 1);
+        fill_rect_ren(REN_W / 2 - 140, 22, 280, 14, rgba(8, 12, 20, 220));
+        draw_text_centered(REN_W / 2, 26, banner_text, rgb(253, 224, 71), 1);
     }
 
     if (game_state == 0 || game_state == 3) {
-        fill_rect_ren(REN_W / 2 - 180, REN_H / 2 - 74, 360, 148, rgba(8, 12, 20, 215));
-        fill_rect_ren(REN_W / 2 - 180, REN_H / 2 - 74, 360, 2, rgb(251, 191, 36));
-        fill_rect_ren(REN_W / 2 - 180, REN_H / 2 + 72, 360, 2, rgb(251, 191, 36));
-        draw_text_centered(REN_W / 2, REN_H / 2 - 58,
+        fill_rect_ren(REN_W / 2 - 172, REN_H / 2 - 68, 344, 136, rgba(8, 12, 20, 215));
+        fill_rect_ren(REN_W / 2 - 172, REN_H / 2 - 68, 344, 2, rgb(251, 191, 36));
+        fill_rect_ren(REN_W / 2 - 172, REN_H / 2 + 66, 344, 2, rgb(251, 191, 36));
+        draw_text_centered(REN_W / 2, REN_H / 2 - 54,
                            game_state == 3 ? "DINO ISLAND SAVED!" : "SUPER LEO WORLD HD",
                            rgb(253, 224, 71), 2);
-        draw_text_centered(REN_W / 2, REN_H / 2 - 32, "60FPS WIDESCREEN - 4 RIDEABLE DINOS - 8 WORLDS", rgb(52, 211, 153), 1);
-        draw_text_centered(REN_W / 2, REN_H / 2 - 12, "EMERALD REX (TONGUE/FLUTTER) - BLAZE REX (3X FIRE)", rgb(226, 232, 240), 1);
-        draw_text_centered(REN_W / 2, REN_H / 2 + 2,  "SKY REX (WINGED FLIGHT) - QUAKE REX (SHOCKWAVE)", rgb(226, 232, 240), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 - 28, "60FPS WIDESCREEN - 4 DINOS - 8 WORLDS", rgb(52, 211, 153), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 - 10, "EMERALD REX (TONGUE) - BLAZE REX (3X FIRE)", rgb(226, 232, 240), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 + 4,  "SKY REX (FLIGHT) - QUAKE REX (SHOCKWAVE)", rgb(226, 232, 240), 1);
         char st_sel[64];
         snprintf(st_sel, sizeof(st_sel), "< STAGE %s: %s >", st->code, st->title);
         draw_text_centered(REN_W / 2, REN_H / 2 + 22, st_sel, rgb(56, 189, 248), 1);
-        draw_text_centered(REN_W / 2, REN_H / 2 + 44, "PRESS ENTER OR SPACE TO PLAY!", rgb(251, 191, 36), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 + 42, "PRESS ENTER OR SPACE TO PLAY!", rgb(251, 191, 36), 1);
     }
 
     SDL_UpdateTexture(screen_tex, NULL, fb, REN_W * (int)sizeof(Uint32));
