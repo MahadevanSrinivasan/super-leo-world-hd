@@ -22,10 +22,10 @@
 #define MAP_W 185
 #define MAP_H 17
 
-/* Hardware-Accelerated 16:9 Render Target (scaled by VideoCore IV GPU to 1280x720) */
-#define REN_W 640
-#define REN_H 360
-#define SCALE (1.0f / 3.0f)
+/* Hardware-Accelerated 16:9 Streaming Render Target (scaled by VideoCore IV GPU to 1280x720) */
+#define REN_W 480
+#define REN_H 270
+#define SCALE 0.25f
 
 #define MAX_ENTITIES 96
 #define MAX_FIREBALLS 16
@@ -164,26 +164,33 @@ typedef struct {
     Color color;
 } Shockwave;
 
+typedef struct {
+    int w, h;
+    Uint32 *px;
+} SoftTex;
+
 static SDL_Window *window = NULL;
 static SDL_Renderer *renderer = NULL;
+static SDL_Texture *screen_tex = NULL;
+static Uint32 fb[REN_W * REN_H];
 
-/* Fast Pre-Baked Textures (eliminates per-frame overdraw & per-pixel FillRects) */
-static SDL_Texture *tex_font = NULL;
-static SDL_Texture *tex_stage_bg = NULL;
-static SDL_Texture *tex_cloud = NULL;
-static SDL_Texture *tex_circle = NULL;
-static SDL_Texture *tex_ring = NULL;
-static SDL_Texture *tex_brick = NULL;
-static SDL_Texture *tex_qblock = NULL;
-static SDL_Texture *tex_used = NULL;
-static SDL_Texture *tex_egg[5] = {NULL};
-static SDL_Texture *tex_pipe = NULL;
-static SDL_Texture *tex_berry = NULL;
-static SDL_Texture *tex_coin = NULL;
-static SDL_Texture *tex_dino[5][2][2] = {{{NULL}}}; /* [dino_id][walk_frame][mouth_full] */
-static SDL_Texture *tex_leo[3][2] = {{NULL}};       /* [power][walk_frame] */
-static SDL_Texture *tex_enemy[4] = {NULL};          /* walker, koopa, shell, flyer */
-static SDL_Texture *tex_boss = NULL;
+/* Fast Pre-Baked Software Sprites (composited in RAM -> 1 single GPU texture upload per frame!) */
+static SoftTex *tex_font = NULL;
+static SoftTex *tex_stage_bg = NULL;
+static SoftTex *tex_cloud = NULL;
+static SoftTex *tex_circle = NULL;
+static SoftTex *tex_ring = NULL;
+static SoftTex *tex_brick = NULL;
+static SoftTex *tex_qblock = NULL;
+static SoftTex *tex_used = NULL;
+static SoftTex *tex_egg[5] = {NULL};
+static SoftTex *tex_pipe = NULL;
+static SoftTex *tex_berry = NULL;
+static SoftTex *tex_coin = NULL;
+static SoftTex *tex_dino[5][2][2] = {{{NULL}}}; /* [dino_id][walk_frame][mouth_full] */
+static SoftTex *tex_leo[3][2] = {{NULL}};       /* [power][walk_frame] */
+static SoftTex *tex_enemy[4] = {NULL};          /* walker, koopa, shell, flyer */
+static SoftTex *tex_boss = NULL;
 
 static char map[MAP_H][MAP_W];
 static float bump_off[MAP_H][MAP_W];
@@ -374,7 +381,7 @@ static void audio_cb(void *userdata, Uint8 *stream, int len) {
  * ========================================================================= */
 static void put_px(Uint32 *px, int w, int h, int x, int y, Color c) {
     if (x < 0 || x >= w || y < 0 || y >= h || c.a == 0) return;
-    px[y * w + x] = ((Uint32)c.r << 24) | ((Uint32)c.g << 16) | ((Uint32)c.b << 8) | (Uint32)c.a;
+    px[y * w + x] = 0xFF000000u | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | (Uint32)c.b;
 }
 
 static void fill_elli(Uint32 *px, int w, int h, float cx, float cy, float rx, float ry, Color c) {
@@ -402,13 +409,12 @@ static void fill_rrect(Uint32 *px, int w, int h, int x0, int y0, int rw, int rh,
     }
 }
 
-static SDL_Texture *create_tex(Uint32 *px, int w, int h, int blend) {
-    SDL_Surface *s = SDL_CreateRGBSurfaceFrom(px, w, h, 32, w * 4,
-                                              0xFF000000, 0x00FF0000, 0x0000FF00, 0x000000FF);
-    SDL_Texture *t = SDL_CreateTextureFromSurface(renderer, s);
-    SDL_SetTextureBlendMode(t, blend ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
-    SDL_FreeSurface(s);
-    free(px);
+static SoftTex *create_tex(Uint32 *px, int w, int h, int blend) {
+    (void)blend;
+    SoftTex *t = (SoftTex *)malloc(sizeof(SoftTex));
+    t->w = w;
+    t->h = h;
+    t->px = px;
     return t;
 }
 
@@ -468,11 +474,12 @@ static const unsigned char font5x7[96][7] = {
 /* Bake stage sky + sun/stars + mountain range + rolling hills into a single fast texture! */
 static void bake_stage_background(int st_idx) {
     if (tex_stage_bg) {
-        SDL_DestroyTexture(tex_stage_bg);
+        free(tex_stage_bg->px);
+        free(tex_stage_bg);
         tex_stage_bg = NULL;
     }
     const StageDef *st = &STAGES[st_idx];
-    int BW = 640, BH = 360;
+    int BW = REN_W, BH = REN_H;
     Uint32 *px = (Uint32 *)calloc(BW * BH, 4);
 
     /* 1. Smooth Sky Gradient */
@@ -483,7 +490,7 @@ static void bake_stage_background(int st_idx) {
             (int)(st->sky_top[1] + (st->sky_bot[1] - st->sky_top[1]) * t),
             (int)(st->sky_top[2] + (st->sky_bot[2] - st->sky_top[2]) * t)
         );
-        Uint32 val = ((Uint32)c.r << 24) | ((Uint32)c.g << 16) | ((Uint32)c.b << 8) | 0xFF;
+        Uint32 val = 0xFF000000u | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | (Uint32)c.b;
         for (int x = 0; x < BW; x++) px[y * BW + x] = val;
     }
 
@@ -495,20 +502,20 @@ static void bake_stage_background(int st_idx) {
             fill_elli(px, BW, BH, (float)sx, (float)sy, 1.5f, 1.5f, rgb(255, 255, 255));
         }
     } else {
-        fill_elli(px, BW, BH, BW * 0.82f, 56.0f, 38.0f, 38.0f, rgb(253, 224, 71));
-        fill_elli(px, BW, BH, BW * 0.82f, 56.0f, 24.0f, 24.0f, rgb(254, 249, 195));
+        fill_elli(px, BW, BH, BW * 0.82f, 44.0f, 28.0f, 28.0f, rgb(253, 224, 71));
+        fill_elli(px, BW, BH, BW * 0.82f, 44.0f, 18.0f, 18.0f, rgb(254, 249, 195));
     }
 
     /* 3. Mountain Range (Far) & Rolling Hills (Near) matching game.js curves */
     Color hf = rgb(st->hill_far[0], st->hill_far[1], st->hill_far[2]);
     Color hn = rgb(st->hill_near[0], st->hill_near[1], st->hill_near[2]);
     for (int x = 0; x < BW; x++) {
-        float u_far = fmodf((float)x, 128.0f) / 128.0f;
-        int y_far = BH - 115 - (int)(sinf(u_far * 3.14159f) * 75.0f);
+        float u_far = fmodf((float)x, 96.0f) / 96.0f;
+        int y_far = BH - 86 - (int)(sinf(u_far * 3.14159f) * 56.0f);
         for (int y = y_far; y < BH; y++) put_px(px, BW, BH, x, y, hf);
 
-        float u_near = fmodf((float)(x + 40), 160.0f) / 160.0f;
-        int y_near = BH - 65 - (int)(sinf(u_near * 3.14159f) * 58.0f);
+        float u_near = fmodf((float)(x + 30), 120.0f) / 120.0f;
+        int y_near = BH - 48 - (int)(sinf(u_near * 3.14159f) * 44.0f);
         for (int y = y_near; y < BH; y++) put_px(px, BW, BH, x, y, hn);
     }
 
@@ -728,44 +735,106 @@ static void bake_all_textures(void) {
 }
 
 /* =========================================================================
- * Fast Batched Drawing Helpers (in 640x360 Render Space)
+ * Fast Software-Composited Drawing Helpers (in 480x270 Render Space -> 1 GPU Upload)
  * ========================================================================= */
-static void fill_rect_ren(int x, int y, int w, int h, Color c) {
-    SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, c.a);
-    SDL_Rect r = {x, y, w, h};
-    SDL_RenderFillRect(renderer, &r);
+static inline void fill_rect_ren(int x, int y, int w, int h, Color c) {
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    int x1 = (x + w) > REN_W ? REN_W : (x + w);
+    int y1 = (y + h) > REN_H ? REN_H : (y + h);
+    if (x0 >= x1 || y0 >= y1) return;
+    if (c.a >= 245) {
+        Uint32 pix = 0xFF000000u | ((Uint32)c.r << 16) | ((Uint32)c.g << 8) | (Uint32)c.b;
+        for (int ry = y0; ry < y1; ry++) {
+            Uint32 *row = &fb[ry * REN_W + x0];
+            for (int rx = x0; rx < x1; rx++) *row++ = pix;
+        }
+    } else {
+        /* Fast dark translucent HUD panel */
+        Uint32 add = ((Uint32)(c.r >> 2) << 16) | ((Uint32)(c.g >> 2) << 8) | (Uint32)(c.b >> 2);
+        for (int ry = y0; ry < y1; ry++) {
+            Uint32 *row = &fb[ry * REN_W + x0];
+            for (int rx = x0; rx < x1; rx++) {
+                Uint32 d = *row;
+                *row++ = 0xFF000000u | (((d & 0xFCFCFCu) >> 2) + add);
+            }
+        }
+    }
 }
 
-static void fill_rect_world(float wx, float wy, float ww, float wh, Color c) {
+static inline void fill_rect_world(float wx, float wy, float ww, float wh, Color c) {
     fill_rect_ren((int)(wx * SCALE + 0.5f), (int)(wy * SCALE + 0.5f),
                   (int)(ww * SCALE + 0.5f), (int)(wh * SCALE + 0.5f), c);
 }
 
-static void draw_tex_world(SDL_Texture *t, float wx, float wy, float ww, float wh, int flip_h, Color tint) {
-    if (!t) return;
-    SDL_SetTextureColorMod(t, tint.r, tint.g, tint.b);
-    SDL_SetTextureAlphaMod(t, tint.a);
-    SDL_Rect dst = {
-        (int)(wx * SCALE + 0.5f),
-        (int)(wy * SCALE + 0.5f),
-        (int)(ww * SCALE + 0.5f),
-        (int)(wh * SCALE + 0.5f)
-    };
-    SDL_RenderCopyEx(renderer, t, NULL, &dst, 0.0, NULL, flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+static void draw_tex_world(SoftTex *t, float wx, float wy, float ww, float wh, int flip_h, Color tint) {
+    if (!t || !t->px) return;
+    int dx = (int)(wx * SCALE + 0.5f);
+    int dy = (int)(wy * SCALE + 0.5f);
+    int dw = (int)(ww * SCALE + 0.5f);
+    int dh = (int)(wh * SCALE + 0.5f);
+    if (dw <= 0 || dh <= 0) return;
+
+    int x0 = dx < 0 ? 0 : dx;
+    int y0 = dy < 0 ? 0 : dy;
+    int x1 = (dx + dw) > REN_W ? REN_W : (dx + dw);
+    int y1 = (dy + dh) > REN_H ? REN_H : (dy + dh);
+    if (x0 >= x1 || y0 >= y1) return;
+
+    int has_tint = (tint.r < 250 || tint.g < 250 || tint.b < 250);
+    Uint32 tint_pix = 0xFF000000u | ((Uint32)tint.r << 16) | ((Uint32)tint.g << 8) | (Uint32)tint.b;
+    int step_x = (t->w << 16) / dw;
+    int step_y = (t->h << 16) / dh;
+
+    for (int ry = y0; ry < y1; ry++) {
+        int sy = ((ry - dy) * step_y) >> 16;
+        if (sy < 0) sy = 0;
+        else if (sy >= t->h) sy = t->h - 1;
+        const Uint32 *srow = &t->px[sy * t->w];
+        Uint32 *drow = &fb[ry * REN_W + x0];
+        int sx_fp = (x0 - dx) * step_x;
+        if (!flip_h && !has_tint) {
+            for (int rx = x0; rx < x1; rx++) {
+                Uint32 sp = srow[sx_fp >> 16];
+                if (sp) *drow = sp;
+                drow++;
+                sx_fp += step_x;
+            }
+        } else {
+            for (int rx = x0; rx < x1; rx++) {
+                int sx = sx_fp >> 16;
+                if (flip_h) sx = t->w - 1 - sx;
+                Uint32 sp = srow[sx];
+                if (sp) {
+                    if (has_tint && (sp & 0xFFFFFFu) == 0xFFFFFFu) *drow = tint_pix;
+                    else *drow = sp;
+                }
+                drow++;
+                sx_fp += step_x;
+            }
+        }
+    }
 }
 
-/* Fast Hardware Font Atlas Text (1 SDL_RenderCopy per character!) */
+/* Fast Software Font Renderer with Drop-Shadow */
 static void draw_text_ren(int x, int y, const char *s, Color col, int scale) {
-    SDL_SetTextureColorMod(tex_font, col.r, col.g, col.b);
-    SDL_SetTextureAlphaMod(tex_font, col.a);
+    Color shadow = rgb(10, 15, 28);
     int cx = x;
     while (*s) {
         char c = *s++;
         if (c >= 'a' && c <= 'z') c -= 32;
         if (c > 32 && c < 128) {
-            SDL_Rect src = {(c - 32) * 6, 0, 6, 8};
-            SDL_Rect dst = {cx, y, 6 * scale, 8 * scale};
-            SDL_RenderCopy(renderer, tex_font, &src, &dst);
+            const unsigned char *g = font5x7[c - 32];
+            for (int r = 0; r < 7; r++) {
+                unsigned char bits = g[r];
+                if (!bits) continue;
+                for (int col_i = 0; col_i < 5; col_i++) {
+                    if (bits & (1 << (4 - col_i))) {
+                        fill_rect_ren(cx + col_i * scale + 1, y + r * scale + 1, scale, scale, shadow);
+                        fill_rect_ren(cx + col_i * scale, y + r * scale, scale, scale, col);
+                    }
+                }
+            }
         }
         cx += 6 * scale;
     }
@@ -1671,13 +1740,18 @@ static void render_frame(void) {
     const StageDef *st = &STAGES[current_stage];
     float cam_x = floorf(camera_x + 0.5f);
 
-    /* 1. Pre-Baked Sky + Sun + Mountain Panorama (2 fast opaque blits!) */
-    int bg_scroll = ((int)(cam_x * 0.08f)) % REN_W;
+    /* 1. Pre-Baked Sky + Sun + Mountain Panorama (Fast row memcpy in RAM!) */
+    int bg_scroll = ((int)(cam_x * 0.06f)) % REN_W;
     if (bg_scroll < 0) bg_scroll += REN_W;
-    SDL_Rect d1 = {-bg_scroll, 0, REN_W, REN_H};
-    SDL_Rect d2 = {REN_W - bg_scroll, 0, REN_W, REN_H};
-    SDL_RenderCopy(renderer, tex_stage_bg, NULL, &d1);
-    SDL_RenderCopy(renderer, tex_stage_bg, NULL, &d2);
+    int split = REN_W - bg_scroll;
+    for (int y = 0; y < REN_H; y++) {
+        const Uint32 *srow = &tex_stage_bg->px[y * REN_W];
+        Uint32 *drow = &fb[y * REN_W];
+        memcpy(drow, srow + bg_scroll, split * sizeof(Uint32));
+        if (bg_scroll > 0) {
+            memcpy(drow + split, srow, bg_scroll * sizeof(Uint32));
+        }
+    }
 
     /* Fluffy Clouds */
     if (st->theme != 1) {
@@ -1823,41 +1897,43 @@ static void render_frame(void) {
     }
 
     /* 7. HUD Bar (Matches game.js renderHUD!) */
-    fill_rect_ren(8, 6, REN_W - 16, 22, rgba(8, 12, 20, 200));
+    fill_rect_ren(6, 4, REN_W - 12, 18, rgba(8, 12, 20, 200));
     char hud_left[96];
-    snprintf(hud_left, sizeof(hud_left), "LEO X%d  COINS:%02d  SCORE:%06d  %s:%s",
-             lives, coins, score, st->code, st->title);
-    draw_text_ren(16, 13, hud_left, rgb(248, 250, 252), 1);
+    snprintf(hud_left, sizeof(hud_left), "LEO X%d COINS:%02d SCORE:%06d %s",
+             lives, coins, score, st->code);
+    draw_text_ren(12, 9, hud_left, rgb(248, 250, 252), 1);
 
     if (player.dino) {
         char d_msg[48];
         snprintf(d_msg, sizeof(d_msg), "DINO:%s%s", DINO_DEFS[player.dino].name, player.dino_mouth ? " [SPIT:Z]" : "");
-        draw_text_ren(REN_W - (int)strlen(d_msg) * 6 - 14, 13, d_msg, DINO_DEFS[player.dino].body, 1);
+        draw_text_ren(REN_W - (int)strlen(d_msg) * 6 - 12, 9, d_msg, DINO_DEFS[player.dino].body, 1);
     } else {
-        draw_text_ren(REN_W - 190, 13, "HIT EGG BLOCK FOR DINO!", rgb(253, 224, 71), 1);
+        draw_text_ren(REN_W - 148, 9, "HIT EGG FOR DINO!", rgb(253, 224, 71), 1);
     }
 
     if (banner_timer > 0 && banner_text[0]) {
-        fill_rect_ren(REN_W / 2 - 160, 34, 320, 18, rgba(8, 12, 20, 220));
-        draw_text_centered(REN_W / 2, 39, banner_text, rgb(253, 224, 71), 1);
+        fill_rect_ren(REN_W / 2 - 150, 26, 300, 16, rgba(8, 12, 20, 220));
+        draw_text_centered(REN_W / 2, 30, banner_text, rgb(253, 224, 71), 1);
     }
 
     if (game_state == 0 || game_state == 3) {
-        fill_rect_ren(REN_W / 2 - 190, REN_H / 2 - 80, 380, 160, rgba(8, 12, 20, 215));
-        fill_rect_ren(REN_W / 2 - 190, REN_H / 2 - 80, 380, 2, rgb(251, 191, 36));
-        fill_rect_ren(REN_W / 2 - 190, REN_H / 2 + 78, 380, 2, rgb(251, 191, 36));
-        draw_text_centered(REN_W / 2, REN_H / 2 - 62,
+        fill_rect_ren(REN_W / 2 - 180, REN_H / 2 - 74, 360, 148, rgba(8, 12, 20, 215));
+        fill_rect_ren(REN_W / 2 - 180, REN_H / 2 - 74, 360, 2, rgb(251, 191, 36));
+        fill_rect_ren(REN_W / 2 - 180, REN_H / 2 + 72, 360, 2, rgb(251, 191, 36));
+        draw_text_centered(REN_W / 2, REN_H / 2 - 58,
                            game_state == 3 ? "DINO ISLAND SAVED!" : "SUPER LEO WORLD HD",
                            rgb(253, 224, 71), 2);
-        draw_text_centered(REN_W / 2, REN_H / 2 - 34, "60FPS WIDESCREEN - 4 RIDEABLE DINOS - 8 WORLDS", rgb(52, 211, 153), 1);
-        draw_text_centered(REN_W / 2, REN_H / 2 - 10, "EMERALD REX (TONGUE/FLUTTER) - BLAZE REX (3X FIRE)", rgb(226, 232, 240), 1);
-        draw_text_centered(REN_W / 2, REN_H / 2 + 6,  "SKY REX (WINGED FLIGHT) - QUAKE REX (SHOCKWAVE)", rgb(226, 232, 240), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 - 32, "60FPS WIDESCREEN - 4 RIDEABLE DINOS - 8 WORLDS", rgb(52, 211, 153), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 - 12, "EMERALD REX (TONGUE/FLUTTER) - BLAZE REX (3X FIRE)", rgb(226, 232, 240), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 + 2,  "SKY REX (WINGED FLIGHT) - QUAKE REX (SHOCKWAVE)", rgb(226, 232, 240), 1);
         char st_sel[64];
         snprintf(st_sel, sizeof(st_sel), "< STAGE %s: %s >", st->code, st->title);
-        draw_text_centered(REN_W / 2, REN_H / 2 + 28, st_sel, rgb(56, 189, 248), 1);
-        draw_text_centered(REN_W / 2, REN_H / 2 + 52, "PRESS ENTER OR SPACE TO PLAY!", rgb(251, 191, 36), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 + 22, st_sel, rgb(56, 189, 248), 1);
+        draw_text_centered(REN_W / 2, REN_H / 2 + 44, "PRESS ENTER OR SPACE TO PLAY!", rgb(251, 191, 36), 1);
     }
 
+    SDL_UpdateTexture(screen_tex, NULL, fb, REN_W * (int)sizeof(Uint32));
+    SDL_RenderCopy(renderer, screen_tex, NULL, NULL);
     SDL_RenderPresent(renderer);
 }
 
@@ -1872,10 +1948,9 @@ int main(int argc, char **argv) {
                               SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                               1280, 720, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
     if (!window) window = SDL_CreateWindow("Super Leo World HD", 0, 0, 1280, 720, SDL_WINDOW_FULLSCREEN);
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (!renderer) renderer = SDL_CreateRenderer(window, -1, 0);
-    SDL_RenderSetLogicalSize(renderer, REN_W, REN_H);
-    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    screen_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, REN_W, REN_H);
 
     bake_all_textures();
 
@@ -1892,6 +1967,21 @@ int main(int argc, char **argv) {
     player.power = 1;
     player.dino = DINO_NONE;
     load_stage(0, 0);
+
+    if (argc > 1 && strcmp(argv[1], "--bench") == 0) {
+        game_state = 1;
+        keys_held[SDL_SCANCODE_RIGHT] = 1;
+        Uint32 t0 = SDL_GetTicks();
+        for (int f = 0; f < 120; f++) {
+            update_game();
+            render_frame();
+        }
+        Uint32 dt = SDL_GetTicks() - t0;
+        printf("Super Leo World 120 active frames in %u ms (%.2f ms/frame, %.1f FPS)\n", dt, dt / 120.0, 120000.0 / dt);
+        SDL_CloseAudio();
+        SDL_Quit();
+        return 0;
+    }
 
     int running = 1;
     Uint32 last = SDL_GetTicks();
